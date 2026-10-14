@@ -1,0 +1,41 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files
+        args: [ --maxkb=25000 ]
+        exclude: ^.venv*|out|refs.bib
+      - id: check-json
+        exclude: ^.venv*|out
+      - id: check-yaml
+        exclude: ^.venv*|out
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: check-vcs-permalinks
+      - id: debug-statements
+      - id: detect-private-key
+      - id: double-quote-string-fixer
+      - id: end-of-file-fixer
+      - id: forbid-new-submodules
+      - id: mixed-line-ending
+        args: [ --fix=lf ]
+        description: Forces to replace line ending by the UNIX 'lf' character.
+        exclude: ^.venv*|out
+      - id: name-tests-test
+        args: [ --pytest-test-first ]
+      - id: pretty-format-json
+        args: [ --autofix ]
+      - id: trailing-whitespace
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.3
+    hooks:
+      - id: ruff
+        args: [ --fix ]
+      - id: ruff-format
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        name: isort
+        args: [--filter-files, --force-single-line]
+        types: [python]

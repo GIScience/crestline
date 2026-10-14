@@ -1,0 +1,14 @@
+__pycache__/
+
+*.egg-info
+
+.env
+.idea/**
+.pytest_cache
+.ruff_cache
+
+.coverage
+*.ckpt
+uv.lock
+
+config/.idea/**
