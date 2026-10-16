@@ -310,3 +310,20 @@ def test_topology(make, n_pieces, n_dead, n_loops):
 @pytest.mark.parametrize('width, centre', [(20, 30.0), (21, 30.5)], ids=['even', 'odd'])
 def test_centred(width, centre):
     assert np.allclose(shapely.get_coordinates(crestline(bar(width)))[:, 1], centre)
+
+
+def has_cuda():
+    try:
+        from numba import cuda
+
+        return cuda.is_available()
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not has_cuda(), reason='no CUDA device')
+@pytest.mark.parametrize('name', CASES)
+def test_cuda(name):
+    mask = CASES[name][0]()
+
+    assert crestline(mask).equals_exact(crestline(mask, device='cuda'), 0)

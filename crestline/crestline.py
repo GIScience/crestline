@@ -385,6 +385,7 @@ def crestline(
     dip: float = 0.65,
     spur: float = 2.0,
     tip: float = 0.75,
+    device: str = 'cpu',
 ) -> MultiLineString:
     """
     Trace the centerline of a polygon or a polygon mask.
@@ -396,6 +397,7 @@ def crestline(
     :param dip: keep a link only if the flood depth along it stays above dip * its lower end
     :param spur: prune dead ends whose disc fits inside spur * the disc of a deeper crest point, 0 = off
     :param tip: ...but only if they are shallower than tip * its depth (real road ends stay deep)
+    :param device: 'cpu', or 'cuda' to flood and find the crest on an NVIDIA GPU (needs numba-cuda); same result
     :return: centerline, empty if there is none
     """
     grid = None
@@ -414,8 +416,16 @@ def crestline(
         if mask.ndim != 2:
             raise ValueError('mask must be 2D')
 
-    depth = _flood(_grid(mask))
-    crest = (_crests(depth) == 1) & (depth >= 2)
+    if device == 'cuda':
+        from .cuda import flood
+
+        depth, crest = flood(mask)
+    elif device == 'cpu':
+        depth = _flood(_grid(mask))
+        crest = (_crests(depth) == 1) & (depth >= 2)
+    else:
+        raise ValueError(f"device must be 'cpu' or 'cuda', got {device!r}")
+
     depth = depth[2:-2, 2:-2]
 
     rows, cols = np.nonzero(crest[2:-2, 2:-2])

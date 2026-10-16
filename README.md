@@ -8,6 +8,14 @@ Polygon centerlines by flooding: no skeletonization, linear time, for shapely po
 uv sync
 ```
 
+On an NVIDIA GPU, pick the extra matching the CUDA version in the `nvidia-smi` header and pass `device='cuda'`. The
+flood and the crest then run on the GPU; the result is identical.
+
+```bash
+uv sync --extra cu12
+uv sync --extra cu13
+```
+
 ## How it works
 
 1. **Flood in.** The shape is flooded from its boundary one ring per step. A pixel's depth is the number of steps it
@@ -42,6 +50,10 @@ best in bold.
 | Loops, polygon / noisy mask (true holes: 3.8) | 4.3 / **4.7**           | **4.0** / 19.6      | 5.9 / 40.8          | 4.3 / 25.4           |
 | Runtime, 1.2 Mpx, polygon / noisy mask        | **17 ms** / **18 ms**   | 64 ms / 806 ms      | 161 ms / 163 ms     | 472 ms / 1.9 s       |
 | Runtime, 17 Mpx, polygon / noisy mask         | **275 ms** / **344 ms** | 459 ms / 18.2 s     | 2.7 s / 2.7 s       | -                    |
+
+### CUDA
+
+![](docs/cuda.png)
 
 Synthetic data only so far...
 
