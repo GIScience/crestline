@@ -174,6 +174,7 @@ def test_flood_seeding_time_scales_with_bbox():
     assert t_large > 4 * t_small
 
 
+# TODO: confirm this memory test's logic (I'm not familiar with)
 @pytest.mark.skipif(not Path('/proc/self/status').exists(), reason='needs /proc (Linux)')
 def test_flood_memory_scales_with_bbox():
     """
@@ -222,11 +223,6 @@ def test_flood_memory_scales_with_bbox():
     assert large > 3 * small
 
 
-# --------------------------------------------------------------------------------------
-# 6. _on_ridge: the dip threshold
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize('neck, kept', [(10, True), (7, True), (6, False), (0, False)])
 def test_on_ridge_rejects_links_crossing_a_neck(neck, kept):
     """
@@ -243,13 +239,8 @@ def test_on_ridge_rejects_links_crossing_a_neck(neck, kept):
     assert bool(mask[0]) is kept
 
 
-# --------------------------------------------------------------------------------------
-# 7. Parallel roads of unequal width that get past the span rule
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize('gap', [5, 20])
-def test_unequal_parallel_roads_stay_separate(gap):
+def test_crestline_unequal_parallel_roads_stay_separate(gap):
     """
     For equal widths the span rule alone keeps parallel roads apart. For *unequal* widths it does
     not: a 60 px road beside a 12 px road is 36 + gap apart, while the rule allows 2 * max(30, 6)
@@ -267,3 +258,37 @@ def test_unequal_parallel_roads_stay_separate(gap):
 
     log.info('gap %d px: %d connected component(s)', gap, len(pieces))
     assert len(pieces) == 2
+
+
+@pytest.mark.parametrize(
+    'gap, kwargs, parts, length',
+    [
+        (5, dict(spur=0, dip=0.0), 1, 1096.5),
+        (12, dict(), 1, 340.0),
+        (13, dict(), 2, 727.5)
+    ],
+    ids=['dip-off-cross-links', 'despur-erases-narrow', 'despur-out-of-reach'],
+)
+def test_crestline_unequal_parallel_roads_merge_when_a_guard_is_off(gap, kwargs, parts, length):
+    """
+    The two ways the previous test's separation breaks, and the one gap where it comes back.
+
+    Total length tells the two failures apart - both collapse to a single component, but for
+    opposite reasons:
+
+    dip=0 disables _on_ridge, so the span rule (which already accepts the link, see above) is the
+    only check left and the roads get rungs between them: 728 px of road plus ~370 px of rungs.
+
+    The default spur=2.0 does the reverse - it *deletes* the narrow road. Every narrow crest point
+    sits dist+6 <= 2*30 from a wide one, so all 98 are "covered" and leaf-peeling walks the whole
+    road away: 340 px left, i.e. the wide road alone. The reach ends at gap=12: at 13 the narrow
+    road's two *end* points fall out of range (the wide crest stops short of the raster edge, so
+    the nearest wide point is diagonally further than the 54 px budget) and the cascade has no leaf
+    to start from. 1 px of gap is the difference between keeping a road and losing it.
+    """
+    lines = crestline(_mock_parallel_roads(gap), **kwargs)
+    pieces = shapely.get_parts(shapely.union_all(shapely.buffer(shapely.get_parts(lines), 0.5)))
+
+    log.info('gap %d px, %s: %d component(s), %.1f px', gap, kwargs, len(pieces), lines.length)
+    assert len(pieces) == parts
+    assert lines.length == pytest.approx(length, rel=0.02)
