@@ -30,16 +30,16 @@ uv sync --extra cu13
 
 ## Benchmark
 
-![](docs/benchmark.png)
+![](benchmarks/output/synthetic_benchmark.png)
 
-Synthetic shapes with known centerlines at 1 m pixels, six seeds each: road networks (15 m half-width), road networks
-with mixed half-widths (6 to 30 m) and tapering rivers (5 to 30 m), plus a 4 km road network (17 Mpx). Every shape is
-traced as the clean polygon and as a noisy raster mask (about 2.5 m of boundary noise), and scored against the true
-centerlines: F1 at 5 m and 2 m tolerance, mean offset of the matched line, and dead ends and loops against the truth.
-`pygeoops.centerline` and `centerline` (Voronoi) run with their default settings, on the vectorised mask for noisy
-inputs (vectorising is included in their runtime). Skeletonize + prune is scikit-image's `skeletonize` with branches
-shorter than twice the median half-width pruned from their tips. Means over the 1 km shapes, runtimes on 2 CPU cores,
-best in bold.
+Synthetic shapes with known centerlines at 1 m pixels:
+- 1 km road networks (15 m half-width),
+- 1 km road networks with  mixed half-widths (6 to 30 m) and 1 km tapering rivers (5 to 30 m), six seeds each, plus 4 km and 8 km road networks
+(17 and 66 Mpx, two seeds each).
+
+Every shape is traced as the clean polygon and as a noisy raster mask (about 2.5 m of
+boundary noise), and scored against the true centerlines. Scores are means over the 1 km shapes; runtimes are the best of
+three runs after a warm-up (one run for Voronoi) on a 24-core CPU. Best in bold.
 
 |                                               | crestline               | pygeoops.centerline | skeletonize + prune | centerline (Voronoi) |
 |-----------------------------------------------|-------------------------|---------------------|---------------------|----------------------|
@@ -48,14 +48,22 @@ best in bold.
 | Mean offset, polygon / noisy mask             | **0.55 m** / **1.32 m** | 1.59 m / 1.71 m     | 0.77 m / 1.53 m     | 0.58 m / 2.11 m      |
 | Dead ends, polygon / noisy mask (true: 11.4)  | **11.2** / **19.2**     | 11.8 / 134.6        | 11.1 / 44.1         | 257.2 / 3488.4       |
 | Loops, polygon / noisy mask (true holes: 3.8) | 4.3 / **4.7**           | **4.0** / 19.6      | 5.9 / 40.8          | 4.3 / 25.4           |
-| Runtime, 1.2 Mpx, polygon / noisy mask        | **17 ms** / **18 ms**   | 64 ms / 806 ms      | 161 ms / 163 ms     | 472 ms / 1.9 s       |
-| Runtime, 17 Mpx, polygon / noisy mask         | **275 ms** / **344 ms** | 459 ms / 18.2 s     | 2.7 s / 2.7 s       | -                    |
+| Runtime, 1.2 Mpx, polygon / noisy mask        | **11 ms** / **13 ms**   | 38 ms / 460 ms      | 94 ms / 90 ms       | 249 ms / 1.1 s       |
+| Runtime, 17 Mpx, polygon / noisy mask         | **172 ms** / **175 ms** | 277 ms / 10.6 s     | 1.4 s / 1.3 s       | -                    |
+| Runtime, 66 Mpx, polygon / noisy mask         | **835 ms** / **886 ms** | -                   | -                   | -                    |
 
 ### CUDA
 
-![](docs/cuda.png)
+![](benchmarks/output/synthetic_benchmark_cuda.png)
 
-Synthetic data only so far...
+The same shapes with `device='cuda'` on an NVIDIA RTX 3500 Ada laptop GPU, against the 24-core CPU above.
+
+### Reproduce
+
+```bash
+uv sync --extra benchmark --extra cu13
+uv run python benchmarks/synthetic_benchmark.py
+```
 
 ## Limitations
 

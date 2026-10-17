@@ -1,0 +1,43 @@
+case,source,method,mpx,f1_5m,f1_2m,offset_m,dead_ends,true_dead_ends,loops,holes,runtime_ms
+roads,polygon,crestline,1.23,0.9147,0.8235,0.551,13.8,14.5,6.5,5.8,12.08
+roads,noisy mask,crestline,1.23,0.9031,0.6783,1.377,14.0,14.5,8.0,5.8,13.58
+roads,polygon,pygeoops.centerline,1.23,0.9006,0.5766,1.62,13.3,14.5,6.5,5.8,38.31
+roads,noisy mask,pygeoops.centerline,1.23,0.8553,0.554,1.693,69.3,14.5,27.0,5.8,467.53
+roads,polygon,skeletonize + prune,1.23,0.9119,0.8197,0.681,13.7,14.5,8.3,5.8,94.19
+roads,noisy mask,skeletonize + prune,1.23,0.85,0.6168,1.514,20.0,14.5,51.8,5.8,90.21
+roads,polygon,centerline (Voronoi),1.23,0.9254,0.8312,0.504,236.0,14.5,6.5,5.8,252.77
+roads,noisy mask,centerline (Voronoi),1.23,0.4874,0.2824,2.101,4400.0,14.5,34.3,5.8,1150.47
+roads,polygon,crestline (CUDA),1.23,0.9147,0.8235,0.551,13.8,14.5,6.5,5.8,11.34
+roads,noisy mask,crestline (CUDA),1.23,0.9031,0.6783,1.377,14.0,14.5,8.0,5.8,10.97
+mixed,polygon,crestline,1.26,0.9031,0.8313,0.492,13.7,13.7,6.3,5.5,12.6
+mixed,noisy mask,crestline,1.26,0.883,0.699,1.258,27.2,13.7,5.3,5.5,13.61
+mixed,polygon,pygeoops.centerline,1.26,0.8521,0.5942,1.446,16.0,13.7,5.3,5.5,40.66
+mixed,noisy mask,pygeoops.centerline,1.26,0.7194,0.4868,1.672,208.3,13.7,25.7,5.5,466.85
+mixed,polygon,skeletonize + prune,1.26,0.9063,0.826,0.657,13.7,13.7,8.3,5.5,106.72
+mixed,noisy mask,skeletonize + prune,1.26,0.7824,0.5887,1.478,79.0,13.7,50.8,5.5,105.77
+mixed,polygon,centerline (Voronoi),1.26,0.8841,0.8078,0.499,251.7,13.7,6.3,5.5,260.13
+mixed,noisy mask,centerline (Voronoi),1.26,0.544,0.3244,2.087,4287.0,13.7,33.3,5.5,1125.36
+mixed,polygon,crestline (CUDA),1.26,0.9031,0.8313,0.492,13.7,13.7,6.3,5.5,12.16
+mixed,noisy mask,crestline (CUDA),1.26,0.883,0.699,1.258,27.2,13.7,5.3,5.5,11.19
+river,polygon,crestline,0.52,0.9677,0.8817,0.622,6.0,6.0,0.2,0.0,4.86
+river,noisy mask,crestline,0.52,0.9403,0.7206,1.331,16.3,6.0,0.7,0.0,5.58
+river,polygon,pygeoops.centerline,0.52,0.9008,0.5724,1.704,6.0,6.0,0.2,0.0,286.16
+river,noisy mask,pygeoops.centerline,0.52,0.6984,0.4591,1.762,126.0,6.0,6.0,0.0,186.41
+river,polygon,skeletonize + prune,0.52,0.9359,0.7778,0.963,6.0,6.0,1.2,0.0,37.39
+river,noisy mask,skeletonize + prune,0.52,0.8126,0.5815,1.608,33.2,6.0,19.8,0.0,35.77
+river,polygon,centerline (Voronoi),0.52,0.8995,0.8079,0.746,283.8,6.0,0.2,0.0,254.04
+river,noisy mask,centerline (Voronoi),0.52,0.577,0.3376,2.142,1778.3,6.0,8.5,0.0,354.93
+river,polygon,crestline (CUDA),0.52,0.9677,0.8817,0.622,6.0,6.0,0.2,0.0,6.69
+river,noisy mask,crestline (CUDA),0.52,0.9403,0.7206,1.331,16.3,6.0,0.7,0.0,5.61
+roads-large,polygon,crestline,16.89,0.9294,0.889,0.356,56.5,53.5,95.5,94.0,158.85
+roads-large,noisy mask,crestline,16.89,0.9237,0.7406,1.248,60.5,53.5,112.0,94.0,181.89
+roads-large,polygon,pygeoops.centerline,16.89,0.9185,0.7517,1.043,54.0,53.5,95.5,94.0,280.59
+roads-large,noisy mask,pygeoops.centerline,16.89,0.887,0.6515,1.454,707.5,53.5,300.0,94.0,10509.33
+roads-large,polygon,skeletonize + prune,16.89,0.9308,0.8948,0.492,54.0,53.5,102.0,94.0,1336.91
+roads-large,noisy mask,skeletonize + prune,16.89,0.8817,0.7023,1.325,164.0,53.5,578.0,94.0,1339.75
+roads-large,polygon,crestline (CUDA),16.89,0.9294,0.889,0.356,56.5,53.5,95.5,94.0,103.61
+roads-large,noisy mask,crestline (CUDA),16.89,0.9237,0.7406,1.248,60.5,53.5,112.0,94.0,108.23
+roads-xl,polygon,crestline,65.77,0.9001,0.8537,0.377,116.5,116.5,321.5,311.0,790.73
+roads-xl,noisy mask,crestline,65.77,0.8954,0.7156,1.262,132.0,116.5,430.0,311.0,851.6
+roads-xl,polygon,crestline (CUDA),65.77,0.9001,0.8537,0.377,116.5,116.5,321.5,311.0,436.73
+roads-xl,noisy mask,crestline (CUDA),65.77,0.8954,0.7156,1.262,132.0,116.5,430.0,311.0,454.53
