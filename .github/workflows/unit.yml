@@ -19,7 +19,7 @@ jobs:
           enable-cache: true
 
       - name: Install the project
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Run pre-commit
         run: uv run pre-commit run -a
@@ -44,7 +44,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install the project
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Run pytest
         run: uv run pytest
