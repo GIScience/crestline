@@ -89,7 +89,6 @@ def test_rasterize_scan_fill_overlapping_parts(merge, holed, expected_missing):
     inside = shapely.contains_xy(truth, *_centres_test_case(mask.shape, left, top, 1.0))
 
     missing = inside & ~mask
-    log.info('%s: %d pixels lost to even-odd parity', 'merged' if merge else 'raw', missing.sum())
 
     assert missing.any() == holed
     assert not (mask & ~inside).any()  # never fills outside the true footprint
@@ -104,7 +103,6 @@ def test_rasterize_cost_driven_by_vertical_edges():
     (lie_mask, _), t_lie = _timed_rasterize(lying, 1.0)
 
     assert up_mask.size == lie_mask.size
-    log.info('vertical risers %.1f ms vs horizontal %.1f ms (%.1fx)', t_up * 1e3, t_lie * 1e3, t_up / t_lie)
     assert t_up > t_lie
 
 
@@ -122,7 +120,7 @@ def test_flood_cost_is_pixel_bound_not_depth_bound_on_cuda():
     runs = [_timed_flood(_grid(np.ones((width, total // width), bool))) for width in (20, 200, 2000)]
     depths, times = [int(level.max()) for level, _ in runs], [t for _, t in runs]
 
-    log.info('depths %s -> %s ms', depths, [round(t * 1e3) for t in times])
+    # log.info('depths %s -> %s ms', depths, [round(t * 1e3) for t in times])
 
     assert depths == [10, 100, 1000]  # 100x more sequential steps...
     assert max(times) < 3 * min(times)  # ...for near-constant CPU time
@@ -144,9 +142,9 @@ def test_flood_seeding_time_scales_with_bbox():
     _, t_small = _timed_flood(bar_in(600))
     _, t_large = _timed_flood(bar_in(2400))
 
-    log.info(
-        '600^2 %.1f ms vs 2400^2 %.1f ms (%.1fx for 16x the bbox)', t_small * 1e3, t_large * 1e3, t_large / t_small
-    )
+    # log.info(
+    #     '600^2 %.1f ms vs 2400^2 %.1f ms (%.1fx for 16x the bbox)', t_small * 1e3, t_large * 1e3, t_large / t_small
+    # )
     assert t_large > 4 * t_small
 
 
@@ -196,13 +194,13 @@ def test_flood_memory_scales_with_bbox():
     small, large = peak_bytes(3000), peak_bytes(6000)
     assert small > 0, 'ru_maxrss never rose above its baseline - the measurement, not _flood, is broken'
 
-    log.info(
-        '%.0f -> %.0f MB (%.1fx) for 4x the bbox, %.1f B/px',
-        small / 2**20,
-        large / 2**20,
-        large / small,
-        large / 6000**2,
-    )
+    # log.info(
+    #     '%.0f -> %.0f MB (%.1fx) for 4x the bbox, %.1f B/px',
+    #     small / 2**20,
+    #     large / 2**20,
+    #     large / small,
+    #     large / 6000**2,
+    # )
     assert large > 3 * small
 
 
@@ -239,7 +237,6 @@ def test_crestline_unequal_parallel_roads_stay_separate(gap):
     lines = crestline(_mock_parallel_roads(gap), spur=0)
     pieces = shapely.get_parts(shapely.union_all(shapely.buffer(shapely.get_parts(lines), 0.5)))
 
-    log.info('gap %d px: %d connected component(s)', gap, len(pieces))
     assert len(pieces) == 2
 
 
@@ -268,6 +265,5 @@ def test_crestline_unequal_parallel_roads_merge_when_a_guard_is_off(gap, kwargs,
     lines = crestline(_mock_parallel_roads(gap), **kwargs)
     pieces = shapely.get_parts(shapely.union_all(shapely.buffer(shapely.get_parts(lines), 0.5)))
 
-    log.info('gap %d px, %s: %d component(s), %.1f px', gap, kwargs, len(pieces), lines.length)
     assert len(pieces) == parts
     assert lines.length == pytest.approx(length, rel=0.02)
