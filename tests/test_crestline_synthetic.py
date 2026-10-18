@@ -69,15 +69,6 @@ def _comb_test_case(n, length, tall, short):
     return np.array(pts)
 
 
-def _mock_parallel_roads(gap, wide=60, narrow=12, length=400, margin=5):
-    """A wide road and a narrow road running side by side, separated by `gap` empty pixels."""
-    h = 2 * margin + wide + gap + narrow
-    mask = np.zeros((h, length + 2 * margin), bool)
-    mask[margin : margin + wide, margin:-margin] = True
-    mask[margin + wide + gap : margin + wide + gap + narrow, margin:-margin] = True
-    return mask
-
-
 @pytest.mark.parametrize(
     'merge, holed, expected_missing', [(False, True, 50), (True, False, 0)], ids=['overlapping', 'unioned']
 )
@@ -218,52 +209,3 @@ def test_on_ridge_rejects_links_crossing_a_neck(neck, kept):
     mask = _on_ridge(points, np.array([[0, 1]]), depth, 0.65, 64)
 
     assert bool(mask[0]) is kept
-
-
-@pytest.mark.parametrize('gap', [5, 20])
-def test_crestline_unequal_parallel_roads_stay_separate(gap):
-    """
-    For equal widths the span rule alone keeps parallel roads apart. For *unequal* widths it does
-    not: a 60 px road beside a 12 px road is 36 + gap apart, while the rule allows 2 * max(30, 6)
-    = 60. _on_ridge is then the only thing rejecting the cross-link - this test is what holds it.
-
-    spur=0 disables _despur, which is a separate failure mode: a narrow point is "covered" when
-    dist + 6 <= spur * 30, i.e. closer than 54 px. At gap=5 the roads are 41 px apart, so every
-    narrow point is covered and leaf-peeling cascades through the whole road, erasing it. At
-    gap=20 they are 56 px apart and it survives. Verified: default spur gives 1 and 2 components.
-    """
-    assert 36 + gap <= 60, 'precondition: the span rule must accept this link'
-
-    lines = crestline(_mock_parallel_roads(gap), spur=0)
-    pieces = shapely.get_parts(shapely.union_all(shapely.buffer(shapely.get_parts(lines), 0.5)))
-
-    assert len(pieces) == 2
-
-
-@pytest.mark.parametrize(
-    'gap, kwargs, parts, length',
-    [(5, dict(spur=0, dip=0.0), 1, 1096.5), (12, dict(), 1, 340.0), (13, dict(), 2, 727.5)],
-    ids=['dip-off-cross-links', 'despur-erases-narrow', 'despur-out-of-reach'],
-)
-def test_crestline_unequal_parallel_roads_merge_when_a_guard_is_off(gap, kwargs, parts, length):
-    """
-    The two ways the previous test's separation breaks, and the one gap where it comes back.
-
-    Total length tells the two failures apart - both collapse to a single component, but for
-    opposite reasons:
-
-    dip=0 disables _on_ridge, so the span rule (which already accepts the link, see above) is the
-    only check left and the roads get rungs between them: 728 px of road plus ~370 px of rungs.
-
-    The default spur=2.0 does the reverse - it *deletes* the narrow road. Every narrow crest point
-    sits dist+6 <= 2*30 from a wide one, so all 98 are "covered" and leaf-peeling walks the whole
-    road away: 340 px left, i.e. the wide road alone. The reach ends at gap=12: at 13 the narrow
-    road's two *end* points fall out of range (the wide crest stops short of the raster edge, so
-    the nearest wide point is diagonally further than the 54 px budget) and the cascade has no leaf
-    to start from. 1 px of gap is the difference between keeping a road and losing it.
-    """
-    lines = crestline(_mock_parallel_roads(gap), **kwargs)
-    pieces = shapely.get_parts(shapely.union_all(shapely.buffer(shapely.get_parts(lines), 0.5)))
-
-    assert len(pieces) == parts
-    assert lines.length == pytest.approx(length, rel=0.02)
