@@ -1,12 +1,3 @@
-"""
-Synthetic stress / limit tests.
-
-These complement test_crestline.py (which checks correctness on small shapes) by pinning down
-*where the cost lives* and *which guard is load-bearing* on adversarial inputs.
-
-No plots: the rasters here are far too large to render.
-"""
-
 import functools
 import logging
 import subprocess
@@ -31,7 +22,6 @@ log = logging.getLogger(__name__)
 
 @pytest.fixture(scope='session', autouse=True)
 def _mock_warm():
-    """Every kernel is @jit; without a warm-up the first call times compilation, not work."""
     m = np.zeros((40, 120), bool)
     m[10:30, 10:110] = True
     _flood(_grid(m))
@@ -43,9 +33,6 @@ def _mock_warm():
 def _record_running_time(fn, repeat=3):
     """
     Decorator: run `fn` `repeat` times and return (its result, best wall clock in seconds).
-
-    Min-of-N is the least noisy estimator for CPU-bound work. Returning the result as well means
-    a test never has to call the kernel a second time just to inspect what it produced.
     """
 
     @functools.wraps(fn)
@@ -95,12 +82,6 @@ def _mock_parallel_roads(gap, wide=60, narrow=12, length=400, margin=5):
     'merge, holed, expected_missing', [(False, True, 50), (True, False, 0)], ids=['overlapping', 'unioned']
 )
 def test_rasterize_scan_fill_overlapping_parts(merge, holed, expected_missing):
-    """
-    _scan_fill in _rasterize uses even-odd parity, not nonzero winding.
-
-    Two *overlapping* MultiPolygon parts therefore XOR their overlap into a phantom hole, which
-    _flood then treats as a real obstacle. union_all() beforehand is mandatory, not cosmetic.
-    """
     parts = [shapely.box(0, 0, 10, 10), shapely.box(5, 0, 15, 10)]
     truth = shapely.union_all(parts)
 
@@ -116,12 +97,6 @@ def test_rasterize_scan_fill_overlapping_parts(merge, holed, expected_missing):
 
 
 def test_rasterize_cost_driven_by_vertical_edges():
-    """
-    Passes 1 and 2 of _scan_fill are serial over edges and cost one iteration per *scanline the
-    edge crosses*. A horizontal edge is free (lo >= hi); a near-vertical one is not.
-
-    Same polygon, same vertex count, same pixel count - only transposed.
-    """
     xy = _comb_test_case(n=400, length=4000.0, tall=2000.0, short=20.0)
     upright, lying = Polygon(xy), Polygon(xy[:, ::-1])
 
