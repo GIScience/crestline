@@ -1,773 +1,932 @@
+import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+from typing import TypeAlias
 
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import shapely
+from affine import Affine
+from centerline.geometry import Centerline
 from jsonargparse import CLI
+from matplotlib import font_manager
+from matplotlib.colors import ListedColormap
+from matplotlib.ticker import FixedLocator
+from matplotlib.ticker import NullLocator
+from numba import cuda
 from numba import njit
+from numpy.typing import NDArray
+from pygeoops import centerline as pygeoops_centerline
 from rasterio.features import rasterize
 from rasterio.features import shapes
 from rasterio.transform import from_origin
 from scipy.ndimage import distance_transform_edt
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
+from shapely import Geometry
 from shapely import LineString
 from shapely import MultiLineString
+from shapely import MultiPolygon
+from shapely import Polygon
+from skimage.morphology import skeletonize
 from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
-CUDA = 'crestline (CUDA)'
-COLUMNS = [
-    ('mpx', 'mpx', 1, 2),
-    ('f1_5m', 'f5', 1, 4),
-    ('f1_2m', 'f2', 1, 4),
-    ('offset_m', 'offset', 1, 3),
-    ('dead_ends', 'dead', 1, 1),
-    ('true_dead_ends', 'true_dead', 1, 1),
-    ('loops', 'loops', 1, 1),
-    ('holes', 'holes', 1, 1),
-    ('runtime_ms', 'time', 1000, 2),
+from crestline import crestline
+
+matplotlib.use('Agg')
+
+Shape: TypeAlias = Polygon | MultiPolygon
+Extractor: TypeAlias = Callable[[Shape, NDArray[np.bool_], Affine], Geometry]
+MethodRegistry: TypeAlias = dict[str, tuple[Extractor, Extractor]]
+Case: TypeAlias = tuple[list[LineString], list[float], Shape]
+Result: TypeAlias = dict[str, Any]
+
+CUDA_METHOD = 'crestline (CUDA)'
+
+RESULT_COLUMNS = [
+    ('mpx', 'mpx', 1, 2),  # mask size in megapixels
+    ('f1_5m', 'f5', 1, 4),  # F1 score with a 5 m match tolerance
+    ('f1_2m', 'f2', 1, 4),  # F1 score with a 2 m match tolerance
+    ('offset_m', 'offset', 1, 3),  # mean distance of predicted points within 5 m of the truth
+    ('dead_ends', 'dead', 1, 1),  # dead ends in the predicted network
+    ('true_dead_ends', 'true_dead', 1, 1),  # dead ends the ground truth really has
+    ('loops', 'loops', 1, 1),  # closed loops in the predicted network
+    ('holes', 'holes', 1, 1),  # holes in the input shape
+    ('runtime_ms', 'time', 1000, 2),  # best runtime, stored in seconds and scaled to milliseconds
 ]
+
+ENDPOINT_SNAP_M = 0.5
+"""Grid size in metres that line endpoints are snapped to before they are matched into junctions."""
+
+ROAD_HALF_WIDTH_M = 15.0
+"""Buffer radius of every road in the uniform width road cases, which makes each road 30 m wide."""
+
+MIXED_HALF_WIDTHS_M = [6.0, 9.0, 14.0, 20.0, 30.0]
+"""Buffer radii the mixed case picks from at random, one per road, giving roads 12 to 60 m wide."""
+
 OUTPUT_DIR = Path(__file__).parent / 'output'
 OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 
+logger = logging.getLogger(Path(__file__).stem)
 
-def road_network(seed, n_main=5, n_side=8, extent=1000.0):
-    rng = np.random.default_rng(seed)
+
+def road_network(
+    seed: int,
+    main_road_count: int = 5,
+    side_road_count: int = 8,
+    extent: float = 1000.0,
+) -> list[LineString]:
+    random_generator = np.random.default_rng(seed)
     roads = []
 
-    for index in range(n_main):
-        along = np.linspace(0, extent, 5)
-        across = rng.uniform(0.15, 0.85) * extent + np.cumsum(rng.normal(0, 50, 5))
-        roads.append(LineString(np.c_[along, across] if index % 2 == 0 else np.c_[across, along]))
+    for road_index in range(main_road_count):
+        along_positions = np.linspace(0, extent, 5)
+        base_offset = random_generator.uniform(0.15, 0.85) * extent
+        drift = np.cumsum(random_generator.normal(0, 50, 5))
+        across_positions = base_offset + drift
 
-    for _ in range(n_side):
-        anchor = roads[rng.integers(n_main)].interpolate(rng.uniform(0.1, 0.9), normalized=True)
-        angle, length = rng.uniform(0, 2 * np.pi), rng.uniform(80, 220)
-        tip = (anchor.x + length * np.cos(angle), anchor.y + length * np.sin(angle))
+        if road_index % 2 == 0:
+            vertices = np.c_[along_positions, across_positions]
+        else:
+            vertices = np.c_[across_positions, along_positions]
+
+        roads.append(LineString(vertices))
+
+    for _ in range(side_road_count):
+        parent_road = roads[random_generator.integers(main_road_count)]
+        anchor = parent_road.interpolate(random_generator.uniform(0.1, 0.9), normalized=True)
+        heading, road_length = random_generator.uniform(0, 2 * np.pi), random_generator.uniform(80, 220)
+        tip = (anchor.x + road_length * np.cos(heading), anchor.y + road_length * np.sin(heading))
         roads.append(LineString([(anchor.x, anchor.y), tip]))
 
     return roads
 
 
-def river(seed, extent=1000.0, n_trib=4):
-    rng = np.random.default_rng(seed)
-    progress = np.linspace(0, 1, 60)
-    trunk = LineString(np.c_[progress * extent, extent * 0.5 + np.cumsum(rng.normal(0, 12, 60))])
-    lines, widths = [trunk], [(5.0, 30.0)]
+def river(
+    seed: int,
+    extent: float = 1000.0,
+    tributary_count: int = 4,
+) -> tuple[list[LineString], list[tuple[float, float]]]:
+    random_generator = np.random.default_rng(seed)
+    trunk_progress = np.linspace(0, 1, 60)
+    trunk_meander = np.cumsum(random_generator.normal(0, 12, 60))
+    trunk = LineString(np.c_[trunk_progress * extent, extent * 0.5 + trunk_meander])
+    centerlines, radii = [trunk], [(5.0, 30.0)]
 
-    for _ in range(n_trib):
-        position = rng.uniform(0.3, 0.9)
-        junction = trunk.interpolate(position, normalized=True)
-        angle = rng.choice([-1, 1]) * rng.uniform(0.6, 1.3) + np.pi
-        length = rng.uniform(150, 300)
+    for _ in range(tributary_count):
+        junction_fraction = random_generator.uniform(0.3, 0.9)
+        junction = trunk.interpolate(junction_fraction, normalized=True)
+        heading = random_generator.choice([-1, 1]) * random_generator.uniform(0.6, 1.3) + np.pi
+        tributary_length = random_generator.uniform(150, 300)
 
-        steps = np.linspace(0, 1, 20)
-        wiggle = np.cumsum(rng.normal(0, 4, 20))
-        xs = junction.x + steps * length * np.cos(angle) - wiggle * np.sin(angle)
-        ys = junction.y + steps * length * np.sin(angle) + wiggle * np.cos(angle)
+        tributary_progress = np.linspace(0, 1, 20)
+        wiggle = np.cumsum(random_generator.normal(0, 4, 20))
+        x_coords = junction.x + tributary_progress * tributary_length * np.cos(heading) - wiggle * np.sin(heading)
+        y_coords = junction.y + tributary_progress * tributary_length * np.sin(heading) + wiggle * np.cos(heading)
 
-        lines.append(LineString(np.c_[xs, ys]))
-        widths.append((5 + 12.5 * position, 5.0))
+        centerlines.append(LineString(np.c_[x_coords, y_coords]))
+        radii.append((5 + 12.5 * junction_fraction, 5.0))
 
-    return lines, widths
+    return centerlines, radii
 
 
-def tapered(line, w0, w1, step=2.0):
-    count = max(int(line.length / step), 2)
-    points = [line.interpolate(distance) for distance in np.linspace(0, line.length, count)]
-    radii = np.linspace(w0, w1, count)
-    segments = zip(points[:-1], points[1:], radii)
+def tapered(line: LineString, start_radius: float, end_radius: float, step: float = 2.0) -> Shape:
+    station_count = max(int(line.length / step), 2)
+    stations = [line.interpolate(distance) for distance in np.linspace(0, line.length, station_count)]
+    radii = np.linspace(start_radius, end_radius, station_count)
+    segments = zip(stations[:-1], stations[1:], radii)
 
     return shapely.union_all(
         [LineString([(start.x, start.y), (end.x, end.y)]).buffer(radius) for start, end, radius in segments]
     )
 
 
-def make_case(kind, seed):
-    if kind == 'roads':
-        lines = road_network(seed)
-        return lines, [15.0] * len(lines), MultiLineString(lines).buffer(15)
-
-    if kind == 'roads-large':
-        lines = road_network(seed, 20, 32, 4000.0)
-        return lines, [15.0] * len(lines), MultiLineString(lines).buffer(15)
-
-    if kind == 'roads-xl':
-        lines = road_network(seed, 40, 64, 8000.0)
-        return lines, [15.0] * len(lines), MultiLineString(lines).buffer(15)
-
-    if kind == 'mixed':
-        lines = road_network(seed)
-        half = list(np.random.default_rng(seed + 100).choice([6.0, 9.0, 14.0, 20.0, 30.0], len(lines)))
-        return lines, half, shapely.union_all([line.buffer(width) for line, width in zip(lines, half)])
-
-    if kind == 'river':
-        lines, widths = river(seed)
-        poly = shapely.union_all([tapered(line, *pair) for line, pair in zip(lines, widths)])
-        return lines, [max(pair) for pair in widths], poly
-
-    raise ValueError(kind)
+def uniform_width_case(centerlines: list[LineString]) -> Case:
+    half_widths = [ROAD_HALF_WIDTH_M] * len(centerlines)
+    polygon = MultiLineString(centerlines).buffer(ROAD_HALF_WIDTH_M)
+    return centerlines, half_widths, polygon
 
 
-def noisy_mask(poly, seed, pad=40, coarse=2.5, fine=0.8):
-    rng = np.random.default_rng(seed + 1000)
-    minx, miny, maxx, maxy = poly.bounds
-    shape = (int(np.ceil(maxy - miny)) + 2 * pad, int(np.ceil(maxx - minx)) + 2 * pad)
-    transform = from_origin(minx - pad, maxy + pad, 1, 1)
+def make_case(case_kind: str, seed: int) -> Case:
+    if case_kind == 'roads':
+        return uniform_width_case(road_network(seed))
 
-    clean = rasterize([(poly, 1)], out_shape=shape, transform=transform).astype(bool)
-    sdf = distance_transform_edt(clean) - distance_transform_edt(~clean)
+    if case_kind == 'roads-large':
+        return uniform_width_case(road_network(seed, main_road_count=20, side_road_count=32, extent=4000.0))
 
-    big = gaussian_filter(rng.normal(size=shape), 4.0)
-    small = gaussian_filter(rng.normal(size=shape), 1.0)
+    if case_kind == 'mixed':
+        centerlines = road_network(seed)
+        half_widths = list(np.random.default_rng(seed + 100).choice(MIXED_HALF_WIDTHS_M, len(centerlines)))
+        polygon = shapely.union_all([line.buffer(half_width) for line, half_width in zip(centerlines, half_widths)])
+        return centerlines, half_widths, polygon
 
-    return sdf + big * coarse / big.std() + small * fine / small.std() > 0.5, transform
+    if case_kind == 'river':
+        centerlines, radii = river(seed)
+        polygon = shapely.union_all([tapered(line, *radius_pair) for line, radius_pair in zip(centerlines, radii)])
+        return centerlines, [max(radius_pair) for radius_pair in radii], polygon
+
+    raise ValueError(f'Unknown case kind: {case_kind}')
 
 
-def vectorize(mask, transform):
-    found = shapes(mask.astype(np.uint8), mask=mask, transform=transform)
-    polys = [shapely.geometry.shape(geometry) for geometry, _ in found]
-    return shapely.MultiPolygon(polys) if len(polys) > 1 else polys[0]
+def noisy_mask(
+    polygon: Shape,
+    seed: int,
+    padding: int = 40,
+    coarse_noise: float = 2.5,
+    fine_noise: float = 0.8,
+) -> tuple[NDArray[np.bool_], Affine]:
+    random_generator = np.random.default_rng(seed + 1000)
+    min_x, min_y, max_x, max_y = polygon.bounds
+    raster_shape = (int(np.ceil(max_y - min_y)) + 2 * padding, int(np.ceil(max_x - min_x)) + 2 * padding)
+    transform = from_origin(min_x - padding, max_y + padding, 1, 1)
+
+    clean_mask = rasterize([(polygon, 1)], out_shape=raster_shape, transform=transform).astype(bool)
+    signed_distance = distance_transform_edt(clean_mask) - distance_transform_edt(~clean_mask)
+
+    coarse_field = gaussian_filter(random_generator.normal(size=raster_shape), 4.0)
+    fine_field = gaussian_filter(random_generator.normal(size=raster_shape), 1.0)
+    coarse_offset = coarse_field * coarse_noise / coarse_field.std()
+    fine_offset = fine_field * fine_noise / fine_field.std()
+
+    return signed_distance + coarse_offset + fine_offset > 0.5, transform
 
 
-def as_lines(geom):
-    if geom is None or geom.is_empty:
+def vectorize(mask: NDArray[np.bool_], transform: Affine) -> Shape:
+    shape_records = shapes(mask.astype(np.uint8), mask=mask, transform=transform)
+    polygons = [shapely.geometry.shape(geometry) for geometry, _value in shape_records]
+    return MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
+
+
+def as_lines(geometry: Geometry | None) -> list[LineString]:
+    if geometry is None or geometry.is_empty:
         return []
 
-    out = []
-    for part in shapely.get_parts(geom):
+    lines = []
+    for part in shapely.get_parts(geometry):
         if part.geom_type == 'LineString':
-            out.append(part)
+            lines.append(part)
         elif part.geom_type in ('MultiLineString', 'GeometryCollection'):
-            out.extend(as_lines(part))
+            lines.extend(as_lines(part))
 
-    return [line for line in out if line.length > 0]
-
-
-def sample(lines, step=0.5):
-    points = [
-        shapely.get_coordinates(
-            shapely.line_interpolate_point(
-                line, np.linspace(0, line.length, max(int(np.ceil(line.length / step)), 1) + 1)
-            )
-        )
-        for line in lines
-    ]
-
-    return np.concatenate(points) if points else np.zeros((0, 2))
+    return [line for line in lines if line.length > 0]
 
 
-def end_keys(lines):
-    parts = shapely.get_parts(shapely.node(MultiLineString(lines)))
-    ends = [coord for part in parts for coord in (part.coords[0], part.coords[-1])]
-    return np.unique(np.round(np.array(ends) / 0.5).astype(np.int64), axis=0, return_counts=True)
+def sample(lines: list[LineString], step: float = 0.5) -> NDArray[np.float64]:
+    sampled = []
+    for line in lines:
+        point_count = max(int(np.ceil(line.length / step)), 1) + 1
+        distances = np.linspace(0, line.length, point_count)
+        sampled.append(shapely.get_coordinates(shapely.line_interpolate_point(line, distances)))
+
+    return np.concatenate(sampled) if sampled else np.zeros((0, 2))
 
 
-def dead_ends(lines):
+def end_keys(lines: list[LineString]) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    noded_segments = shapely.get_parts(shapely.node(MultiLineString(lines)))
+    endpoints = [coord for segment in noded_segments for coord in (segment.coords[0], segment.coords[-1])]
+    snapped = np.round(np.array(endpoints) / ENDPOINT_SNAP_M).astype(np.int64)
+    return np.unique(snapped, axis=0, return_counts=True)
+
+
+def dead_ends(lines: list[LineString]) -> int:
     if not lines:
         return 0
 
-    _, count = end_keys(lines)
-    return int((count == 1).sum())
+    _, occurrences = end_keys(lines)
+    return int((occurrences == 1).sum())
 
 
-def end_points(lines):
+def end_points(lines: list[LineString]) -> NDArray[np.float64]:
     if not lines:
         return np.zeros((0, 2))
 
-    keys, count = end_keys(lines)
-    return keys[count == 1] * 0.5
+    grid_keys, occurrences = end_keys(lines)
+    return grid_keys[occurrences == 1] * ENDPOINT_SNAP_M
 
 
-def loops(lines):
+def loops(lines: list[LineString]) -> int:
     if not lines:
         return 0
 
-    return len(shapely.get_parts(shapely.polygonize(shapely.get_parts(shapely.node(MultiLineString(lines))))))
+    noded_segments = shapely.get_parts(shapely.node(MultiLineString(lines)))
+    return len(shapely.get_parts(shapely.polygonize(noded_segments)))
 
 
-def holes(poly, smallest=50.0):
-    return sum(
-        1 for polygon in shapely.get_parts(poly) for ring in polygon.interiors if shapely.Polygon(ring).area >= smallest
-    )
+def holes(polygon: Shape, min_area: float = 50.0) -> int:
+    return sum(1 for part in shapely.get_parts(polygon) for ring in part.interiors if Polygon(ring).area >= min_area)
 
 
-def true_dead_ends(lines, half):
-    count = 0
-    for index, line in enumerate(lines):
-        for point in (shapely.Point(line.coords[0]), shapely.Point(line.coords[-1])):
+def true_dead_ends(lines: list[LineString], half_widths: list[float]) -> int:
+    dead_end_count = 0
+    for line_index, line in enumerate(lines):
+        for endpoint in (shapely.Point(line.coords[0]), shapely.Point(line.coords[-1])):
             if all(
-                point.distance(other) > half[other_index] + 0.5 * half[index]
-                for other_index, other in enumerate(lines)
-                if other_index != index
+                endpoint.distance(other_line) > half_widths[other_index] + 0.5 * half_widths[line_index]
+                for other_index, other_line in enumerate(lines)
+                if other_index != line_index
             ):
-                count += 1
+                dead_end_count += 1
 
-    return count
+    return dead_end_count
 
 
-def score(pred, truth):
-    truth_points, pred_points = sample(truth), sample(pred)
-    if len(pred_points) == 0:
+def score(predicted_lines: list[LineString], true_lines: list[LineString]) -> dict[str, float]:
+    true_points, predicted_points = sample(true_lines), sample(predicted_lines)
+    if len(predicted_points) == 0:
         return {'f5': 0.0, 'f2': 0.0, 'offset': float('nan')}
 
-    d_pred = cKDTree(truth_points).query(pred_points)[0]
-    d_true = cKDTree(pred_points).query(truth_points)[0]
+    predicted_to_truth = cKDTree(true_points).query(predicted_points)[0]
+    truth_to_predicted = cKDTree(predicted_points).query(true_points)[0]
 
-    out = {}
-    for tol in (2, 5):
-        precision, recall = (d_pred <= tol).mean(), (d_true <= tol).mean()
-        out[f'f{tol}'] = float(2 * precision * recall / (precision + recall)) if precision + recall else 0.0
+    metrics = {}
+    for tolerance in (2, 5):
+        precision = (predicted_to_truth <= tolerance).mean()
+        recall = (truth_to_predicted <= tolerance).mean()
+        metrics[f'f{tolerance}'] = float(2 * precision * recall / (precision + recall)) if precision + recall else 0.0
 
-    out['offset'] = float(d_pred[d_pred <= 5].mean())
-    return out
+    metrics['offset'] = float(predicted_to_truth[predicted_to_truth <= 5].mean())
+    return metrics
 
 
 @njit(cache=True)
-def _drop_spurs(n_nodes, edges, length, limit):
-    count = np.zeros(n_nodes + 1, np.int64)
-    for edge in range(len(edges)):
-        count[edges[edge, 0] + 1] += 1
-        count[edges[edge, 1] + 1] += 1
+def _drop_spurs(
+    node_count: int, edges: NDArray[np.int64], edge_lengths: NDArray[np.float64], max_spur_length: float
+) -> NDArray[np.bool_]:
+    shifted_degree = np.zeros(node_count + 1, np.int64)
 
-    start = np.cumsum(count)
-    nbr = np.empty(start[-1], np.int64)
-    via = np.empty(start[-1], np.int64)
-    fill = start[:-1].copy()
-    for edge in range(len(edges)):
-        for node, neighbor in ((edges[edge, 0], edges[edge, 1]), (edges[edge, 1], edges[edge, 0])):
-            nbr[fill[node]], via[fill[node]] = neighbor, edge
-            fill[node] += 1
+    for edge_index in range(len(edges)):
+        shifted_degree[edges[edge_index, 0] + 1] += 1
+        shifted_degree[edges[edge_index, 1] + 1] += 1
 
-    degree = count[1:].copy()
-    alive = np.ones(len(edges), np.bool_)
-    chain = np.empty(len(edges), np.int64)
+    adjacency_start = np.cumsum(shifted_degree)
+    adjacency_node = np.empty(adjacency_start[-1], np.int64)
+    adjacency_edge = np.empty(adjacency_start[-1], np.int64)
+    insert_position = adjacency_start[:-1].copy()
+
+    for edge_index in range(len(edges)):
+        node_a, node_b = edges[edge_index, 0], edges[edge_index, 1]
+        for node, neighbor in ((node_a, node_b), (node_b, node_a)):
+            adjacency_node[insert_position[node]], adjacency_edge[insert_position[node]] = neighbor, edge_index
+            insert_position[node] += 1
+
+    degree = shifted_degree[1:].copy()
+    edge_alive = np.ones(len(edges), np.bool_)
+    chain_edges = np.empty(len(edges), np.int64)
 
     changed = True
     while changed:
         changed = False
-        for vertex in range(n_nodes):
-            if degree[vertex] != 1:
+        for start_node in range(node_count):
+            if degree[start_node] != 1:
                 continue
 
-            cur, came, total, chain_length = vertex, -1, 0.0, 0
+            current_node, previous_edge, chain_length, chain_edge_count = start_node, -1, 0.0, 0
             while True:
-                nxt, edge = -1, -1
-                for slot in range(start[cur], start[cur + 1]):
-                    if alive[via[slot]] and via[slot] != came:
-                        nxt, edge = nbr[slot], via[slot]
+                next_node, next_edge = -1, -1
+                for slot in range(adjacency_start[current_node], adjacency_start[current_node + 1]):
+                    if edge_alive[adjacency_edge[slot]] and adjacency_edge[slot] != previous_edge:
+                        next_node, next_edge = adjacency_node[slot], adjacency_edge[slot]
                         break
 
-                if nxt < 0:
+                if next_node < 0:
                     break
 
-                chain[chain_length] = edge
-                chain_length += 1
-                total += length[edge]
-                cur, came = nxt, edge
-                if degree[cur] != 2 or total >= limit:
+                chain_edges[chain_edge_count] = next_edge
+                chain_edge_count += 1
+                chain_length += edge_lengths[next_edge]
+                current_node, previous_edge = next_node, next_edge
+
+                if degree[current_node] != 2 or chain_length >= max_spur_length:
                     break
 
-            if total < limit and degree[cur] != 2:
-                for step in range(chain_length):
-                    alive[chain[step]] = False
-                    degree[edges[chain[step], 0]] -= 1
-                    degree[edges[chain[step], 1]] -= 1
+            if chain_length < max_spur_length and degree[current_node] != 2:
+                for chain_position in range(chain_edge_count):
+                    removed_edge = chain_edges[chain_position]
+                    edge_alive[removed_edge] = False
+                    degree[edges[removed_edge, 0]] -= 1
+                    degree[edges[removed_edge, 1]] -= 1
 
                 changed = True
 
-    return alive
+    return edge_alive
 
 
-def skeleton(mask, transform, prune=2.0):
-    from skimage.morphology import skeletonize
+def skeleton(mask: NDArray[np.bool_], transform: Affine, prune_factor: float = 2.0) -> LineString | MultiLineString:
+    skeleton_raster = np.pad(skeletonize(mask), 1)
+    pixel_rows, pixel_cols = np.nonzero(skeleton_raster)
 
-    skel = np.pad(skeletonize(mask), 1)
-    rows, cols = np.nonzero(skel)
-    if len(rows) < 2:
+    if len(pixel_rows) < 2:
         return MultiLineString()
 
-    ids = np.full(skel.shape, -1, np.int64)
-    ids[rows, cols] = np.arange(len(rows))
+    pixel_ids = np.full(skeleton_raster.shape, -1, np.int64)
+    pixel_ids[pixel_rows, pixel_cols] = np.arange(len(pixel_rows))
 
-    edges = []
+    edge_blocks = []
     for row_step, col_step in ((0, 1), (1, 0), (1, 1), (1, -1)):
-        linked = skel[rows + row_step, cols + col_step]
+        is_linked = skeleton_raster[pixel_rows + row_step, pixel_cols + col_step]
+
         if row_step and col_step:
-            linked &= ~skel[rows, cols + col_step] & ~skel[rows + row_step, cols]
+            column_neighbor = skeleton_raster[pixel_rows, pixel_cols + col_step]
+            row_neighbor = skeleton_raster[pixel_rows + row_step, pixel_cols]
+            is_linked &= ~column_neighbor & ~row_neighbor
 
-        edges.append(np.c_[ids[rows[linked], cols[linked]], ids[rows[linked] + row_step, cols[linked] + col_step]])
+        linked_rows, linked_cols = pixel_rows[is_linked], pixel_cols[is_linked]
+        source_ids = pixel_ids[linked_rows, linked_cols]
+        target_ids = pixel_ids[linked_rows + row_step, linked_cols + col_step]
+        edge_blocks.append(np.c_[source_ids, target_ids])
 
-    edges = np.concatenate(edges)
-    length = np.hypot(rows[edges[:, 0]] - rows[edges[:, 1]], cols[edges[:, 0]] - cols[edges[:, 1]])
+    edges = np.concatenate(edge_blocks)
+    row_deltas = pixel_rows[edges[:, 0]] - pixel_rows[edges[:, 1]]
+    col_deltas = pixel_cols[edges[:, 0]] - pixel_cols[edges[:, 1]]
+    edge_lengths = np.hypot(row_deltas, col_deltas)
 
-    limit = prune * np.median(distance_transform_edt(mask)[rows - 1, cols - 1])
-    edges = edges[_drop_spurs(len(rows), edges, length, limit)]
+    distance_to_edge = distance_transform_edt(mask)[pixel_rows - 1, pixel_cols - 1]
+    max_spur_length = prune_factor * np.median(distance_to_edge)
+    edges = edges[_drop_spurs(len(pixel_rows), edges, edge_lengths, max_spur_length)]
+
     if len(edges) == 0:
         return MultiLineString()
 
-    xy = np.c_[transform * (cols - 0.5, rows - 0.5)]
-    return shapely.line_merge(shapely.multilinestrings(shapely.linestrings(xy[edges])))
+    node_coordinates = np.c_[transform * (pixel_cols - 0.5, pixel_rows - 0.5)]
+    return shapely.line_merge(shapely.multilinestrings(shapely.linestrings(node_coordinates[edges])))
 
 
-def cuda_device():
+def cuda_device() -> tuple[str, str]:
     try:
-        from numba import cuda
-
         if not cuda.is_available():
             return '', 'no device found'
 
-        name = cuda.get_current_device().name
+        device_name = cuda.get_current_device().name
     except Exception as error:
         return '', f'{type(error).__name__}: {error}'
 
-    return (name.decode() if isinstance(name, bytes) else name), ''
+    return (device_name.decode() if isinstance(device_name, bytes) else device_name), ''
 
 
-def methods(with_cuda=False):
-    from centerline.geometry import Centerline
-    from pygeoops import centerline as pygeoops_centerline
+def voronoi_centerline(geometry: Shape) -> Geometry:
+    if geometry.geom_type == 'MultiPolygon':
+        return shapely.union_all([voronoi_centerline(part) for part in geometry.geoms])
 
-    from crestline import crestline
+    try:
+        return Centerline(geometry, interpolation_distance=1.0).geometry
+    except Exception as error:
+        logger.debug(f'Voronoi centerline failed on a {geometry.area:.1f} m² part: {error}')
+        return MultiLineString()
 
-    def voronoi(geom):
-        if geom.geom_type == 'MultiPolygon':
-            return shapely.union_all([voronoi(part) for part in geom.geoms])
 
-        try:
-            return Centerline(geom, interpolation_distance=1.0).geometry
-        except Exception:
-            return MultiLineString()
+def burn_polygon(polygon: Shape, mask: NDArray[np.bool_], transform: Affine) -> NDArray[np.bool_]:
+    return rasterize([(polygon, 1)], out_shape=mask.shape, transform=transform).astype(bool)
 
-    def burn(poly, mask, tr):
-        return rasterize([(poly, 1)], out_shape=mask.shape, transform=tr).astype(bool)
 
-    out = {
+def methods(with_cuda: bool = False) -> MethodRegistry:
+    registry = {
         'crestline': (
-            lambda poly, mask, tr: crestline(poly, resolution=1.0),
-            lambda poly, mask, tr: crestline(mask, transform=tr),
+            lambda polygon, mask, transform: crestline(polygon, resolution=1.0),
+            lambda polygon, mask, transform: crestline(mask, transform=transform),
         ),
         'pygeoops.centerline': (
-            lambda poly, mask, tr: pygeoops_centerline(poly),
-            lambda poly, mask, tr: pygeoops_centerline(vectorize(mask, tr)),
+            lambda polygon, mask, transform: pygeoops_centerline(polygon),
+            lambda polygon, mask, transform: pygeoops_centerline(vectorize(mask, transform)),
         ),
         'skeletonize + prune': (
-            lambda poly, mask, tr: skeleton(burn(poly, mask, tr), tr),
-            lambda poly, mask, tr: skeleton(mask, tr),
+            lambda polygon, mask, transform: skeleton(burn_polygon(polygon, mask, transform), transform),
+            lambda polygon, mask, transform: skeleton(mask, transform),
         ),
         'centerline (Voronoi)': (
-            lambda poly, mask, tr: voronoi(poly),
-            lambda poly, mask, tr: voronoi(vectorize(mask, tr)),
+            lambda polygon, mask, transform: voronoi_centerline(polygon),
+            lambda polygon, mask, transform: voronoi_centerline(vectorize(mask, transform)),
         ),
     }
+
     if with_cuda:
-        out[CUDA] = (
-            lambda poly, mask, tr: crestline(poly, resolution=1.0, device='cuda'),
-            lambda poly, mask, tr: crestline(mask, transform=tr, device='cuda'),
+        registry[CUDA_METHOD] = (
+            lambda polygon, mask, transform: crestline(polygon, resolution=1.0, device='cuda'),
+            lambda polygon, mask, transform: crestline(mask, transform=transform, device='cuda'),
         )
 
-    return out
+    return registry
 
 
-def skipped(name, kind):
-    return (name.startswith('centerline') and kind == 'roads-large') or (
-        not name.startswith('crestline') and kind == 'roads-xl'
-    )
+def run(plan: list[tuple[str, int]], method_registry: MethodRegistry, repeat: int) -> list[Result]:
+    total_runs = 2 * len(method_registry)
+    results, cpu_outputs = [], {}
 
+    with tqdm(total=total_runs, unit='run') as progress:
+        for case_kind, seed in plan:
+            centerlines, half_widths, polygon = make_case(case_kind, seed)
+            mask, transform = noisy_mask(polygon, seed)
+            true_dead_end_count = true_dead_ends(centerlines, half_widths)
+            hole_count = holes(polygon)
+            logger.info(
+                f'Case {case_kind} seed {seed}: {len(centerlines)} centerlines, {mask.size / 1e6:.2f} Mpx mask, '
+                f'{true_dead_end_count} true dead ends, {hole_count} holes'
+            )
 
-def run(plan, ms, repeat):
-    total = 2 * sum(not skipped(name, kind) for kind, _ in plan for name in ms)
-    rows, cpu = [], {}
+            for method_name, (run_on_polygon, run_on_mask) in method_registry.items():
+                for source, extract in (('polygon', run_on_polygon), ('noisy mask', run_on_mask)):
+                    progress.set_description(f'{case_kind} s{seed} {method_name} ({source})')
+                    extract(polygon, mask, transform)
 
-    with tqdm(total=total, unit='run') as bar:
-        for kind, seed in plan:
-            lines, half, poly = make_case(kind, seed)
-            mask, tr = noisy_mask(poly, seed)
-            n_true, n_holes = true_dead_ends(lines, half), holes(poly)
-
-            for name, (on_poly, on_mask) in ms.items():
-                if skipped(name, kind):
-                    continue
-
-                for source, fn in (('polygon', on_poly), ('noisy mask', on_mask)):
-                    bar.set_description(f'{kind} s{seed} {name} ({source})')
-                    fn(poly, mask, tr)
-
-                    best = np.inf
-                    for _ in range(repeat if not name.startswith('centerline') else 1):
+                    timed_runs = repeat if not method_name.startswith('centerline') else 1
+                    best_time = np.inf
+                    for _ in range(timed_runs):
                         started = time.perf_counter()
-                        out = fn(poly, mask, tr)
-                        best = min(best, time.perf_counter() - started)
+                        output = extract(polygon, mask, transform)
+                        best_time = min(best_time, time.perf_counter() - started)
 
-                    if name == 'crestline':
-                        cpu[source] = out
+                    if method_name == 'crestline':
+                        cpu_outputs[source] = output
 
-                    pred = as_lines(out)
-                    row = {
-                        'case': kind,
+                    predicted_lines = as_lines(output)
+                    result = {
+                        'case': case_kind,
                         'seed': seed,
                         'source': source,
-                        'method': name,
-                        'time': best,
+                        'method': method_name,
+                        'time': best_time,
                         'mpx': mask.size / 1e6,
                     }
-                    row.update(
-                        score(pred, lines),
-                        dead=dead_ends(pred),
-                        true_dead=n_true,
-                        loops=loops(pred),
-                        holes=n_holes,
+                    result.update(
+                        score(predicted_lines, centerlines),
+                        dead=dead_ends(predicted_lines),
+                        true_dead=true_dead_end_count,
+                        loops=loops(predicted_lines),
+                        holes=hole_count,
                     )
-                    if name == CUDA:
-                        row['same'] = bool(out.equals_exact(cpu[source], 0))
 
-                    rows.append(row)
-                    bar.set_postfix(f5=f'{row["f5"]:.3f}', dead=f'{row["dead"]}/{n_true}', time=f'{best:.3f}s')
-                    bar.update()
+                    if method_name == CUDA_METHOD:
+                        result['same'] = bool(output.equals_exact(cpu_outputs[source], 0))
+                        if not result['same']:
+                            logger.warning(f'CUDA and CPU crestline disagree on {case_kind} seed {seed} ({source})')
 
-    return rows
+                    logger.debug(
+                        f'{method_name} on {case_kind} seed {seed} ({source}): F1@5m {result["f5"]:.3f}, '
+                        f'{result["dead"]}/{true_dead_end_count} dead ends, {result["loops"]} loops, '
+                        f'{1000 * best_time:.1f} ms'
+                    )
+
+                    results.append(result)
+                    progress.set_postfix(
+                        f5=f'{result["f5"]:.3f}',
+                        dead=f'{result["dead"]}/{true_dead_end_count}',
+                        time=f'{best_time:.3f}s',
+                    )
+                    progress.update()
+
+    return results
 
 
-def figure(rows, ms, case='roads', seed=1, window=(470, 270, 870, 670)):
-    import matplotlib
+def figure(
+    results: list[Result],
+    method_registry: MethodRegistry,
+    case_kind: str = 'roads',
+    seed: int = 1,
+    window: tuple[float, float, float, float] = (470, 270, 870, 670),
+) -> None:
+    logger.info(f'Drawing benchmark figure from {case_kind} seed {seed}')
 
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    from matplotlib import font_manager
-    from matplotlib.colors import ListedColormap
-    from matplotlib.ticker import FixedLocator
-    from matplotlib.ticker import NullLocator
+    surface_color, land_color, hairline_color, axis_color = '#fcfcfb', '#e4e2db', '#e1e0d9', '#c3c2b7'
+    ink_color, secondary_ink_color, muted_color = '#0b0b0b', '#52514e', '#898781'
+    accent_color, dead_end_color, neutral_color = '#2a78d6', '#eb6834', '#aeaca5'
 
-    surface, land, hair, axis = '#fcfcfb', '#e4e2db', '#e1e0d9', '#c3c2b7'
-    ink, ink2, muted = '#0b0b0b', '#52514e', '#898781'
-    blue, orange, other = '#2a78d6', '#eb6834', '#aeaca5'
+    installed_fonts = {font.name for font in font_manager.fontManager.ttflist}
+    font_family = ['Inter', 'DejaVu Sans'] if 'Inter' in installed_fonts else ['DejaVu Sans']
+    plt.rcParams.update({'font.family': font_family, 'font.size': 9, 'text.color': secondary_ink_color})
 
-    installed = {font.name for font in font_manager.fontManager.ttflist}
-    fonts = ['Inter', 'DejaVu Sans'] if 'Inter' in installed else ['DejaVu Sans']
-    plt.rcParams.update({'font.family': fonts, 'font.size': 9, 'text.color': ink2})
+    method_names = [method_name for method_name in method_registry if method_name != CUDA_METHOD]
+    centerlines, half_widths, polygon = make_case(case_kind, seed)
+    mask, transform = noisy_mask(polygon, seed)
+    true_dead_end_count = true_dead_ends(centerlines, half_widths)
 
-    names = [method for method in ms if method != CUDA]
-    lines, half, poly = make_case(case, seed)
-    mask, tr = noisy_mask(poly, seed)
+    window_min_x, window_min_y, window_max_x, window_max_y = window
+    crop_col_start, crop_row_start = ~transform * (window_min_x, window_max_y)
+    crop_col_end, crop_row_end = ~transform * (window_max_x, window_min_y)
+    mask_crop = mask[int(crop_row_start) : int(crop_row_end), int(crop_col_start) : int(crop_col_end)]
 
-    x0, y0, x1, y1 = window
-    c0, r0 = ~tr * (x0, y1)
-    c1, r1 = ~tr * (x1, y0)
-    crop = mask[int(r0) : int(r1), int(c0) : int(c1)]
+    figure_width, figure_height, left_margin, right_margin, panel_gap = 12.0, 7.5, 0.45, 0.25, 0.14
+    panel_size = (figure_width - left_margin - right_margin - panel_gap * (len(method_names) - 1)) / len(method_names)
+    fig = plt.figure(figsize=(figure_width, figure_height), facecolor=surface_color)
 
-    fig_w, fig_h, left, right, gap = 12.0, 7.5, 0.45, 0.25, 0.14
-    size = (fig_w - left - right - gap * (len(names) - 1)) / len(names)
-    fig = plt.figure(figsize=(fig_w, fig_h), facecolor=surface)
+    def figure_box(
+        left_inches: float, top_inches: float, width_inches: float = 0.0, height_inches: float = 0.0
+    ) -> list[float]:
+        return [
+            left_inches / figure_width,
+            1 - (top_inches + height_inches) / figure_height,
+            width_inches / figure_width,
+            height_inches / figure_height,
+        ]
 
-    def at(pos_x, pos_y, box_w=0.0, box_h=0.0):
-        return [pos_x / fig_w, 1 - (pos_y + box_h) / fig_h, box_w / fig_w, box_h / fig_h]
+    def place_text(left_inches: float, top_inches: float, label: str, **kwargs: Any) -> None:
+        fig.text(left_inches / figure_width, 1 - top_inches / figure_height, label, **kwargs)
 
-    def text(pos_x, pos_y, label, **kwargs):
-        fig.text(pos_x / fig_w, 1 - pos_y / fig_h, label, **kwargs)
-
-    text(
-        left,
+    place_text(
+        left_margin,
         0.5,
-        f'Noisy road mask, {x1 - x0:.0f} × {y1 - y0:.0f} m window',
+        f'Noisy road mask, {window_max_x - window_min_x:.0f} × {window_max_y - window_min_y:.0f} m window',
         fontsize=14,
-        color=ink,
+        color=ink_color,
         weight='semibold',
     )
-    text(
-        left,
+    place_text(
+        left_margin,
         0.78,
-        f'Scores in each title are for the whole network; it has {true_dead_ends(lines, half)} true dead ends.',
+        f'Scores in each title are for the whole network; it has {true_dead_end_count} true dead ends.',
         fontsize=10,
     )
 
-    keys = fig_w - right
-    text(keys, 0.78, 'centerline', fontsize=9, ha='right')
+    legend_right = figure_width - right_margin
+    place_text(legend_right, 0.78, 'centerline', fontsize=9, ha='right')
     fig.lines.append(
         plt.Line2D(
-            [(keys - 0.95) / fig_w, (keys - 0.72) / fig_w],
-            [1 - 0.745 / fig_h] * 2,
-            color=blue,
+            [(legend_right - 0.95) / figure_width, (legend_right - 0.72) / figure_width],
+            [1 - 0.745 / figure_height] * 2,
+            color=accent_color,
             lw=2,
             transform=fig.transFigure,
         )
     )
-    text(keys - 1.12, 0.78, 'dead end', fontsize=9, ha='right')
+    place_text(legend_right - 1.12, 0.78, 'dead end', fontsize=9, ha='right')
     fig.lines.append(
         plt.Line2D(
-            [(keys - 1.82) / fig_w],
-            [1 - 0.745 / fig_h],
+            [(legend_right - 1.82) / figure_width],
+            [1 - 0.745 / figure_height],
             marker='o',
             ms=6.5,
-            color=orange,
-            mec=surface,
+            color=dead_end_color,
+            mec=surface_color,
             mew=1.2,
             transform=fig.transFigure,
         )
     )
 
-    for index, name in enumerate(names):
-        pred = as_lines(ms[name][1](poly, mask, tr))
-        ends = end_points(pred)
-        panel_x = left + index * (size + gap)
+    for panel_index, method_name in enumerate(method_names):
+        _, run_on_mask = method_registry[method_name]
+        predicted_lines = as_lines(run_on_mask(polygon, mask, transform))
+        dead_end_points = end_points(predicted_lines)
+        panel_left = left_margin + panel_index * (panel_size + panel_gap)
 
-        ax = fig.add_axes(at(panel_x, 1.55, size, size))
-        ax.imshow(crop, cmap=ListedColormap([surface, land]), extent=(x0, x1, y0, y1), interpolation='nearest')
-        for line in pred:
-            ax.plot(*line.xy, color=blue, lw=1.4, solid_capstyle='round', solid_joinstyle='round')
+        panel_axes = fig.add_axes(figure_box(panel_left, 1.55, panel_size, panel_size))
+        panel_axes.imshow(
+            mask_crop,
+            cmap=ListedColormap([surface_color, land_color]),
+            extent=(window_min_x, window_max_x, window_min_y, window_max_y),
+            interpolation='nearest',
+        )
+        for line in predicted_lines:
+            panel_axes.plot(*line.xy, color=accent_color, lw=1.4, solid_capstyle='round', solid_joinstyle='round')
 
-        inside = (ends[:, 0] > x0) & (ends[:, 0] < x1) & (ends[:, 1] > y0) & (ends[:, 1] < y1)
-        ax.plot(*ends[inside].T, 'o', ms=5.5, color=orange, mec=surface, mew=1.1, zorder=3)
+        in_window = (
+            (dead_end_points[:, 0] > window_min_x)
+            & (dead_end_points[:, 0] < window_max_x)
+            & (dead_end_points[:, 1] > window_min_y)
+            & (dead_end_points[:, 1] < window_max_y)
+        )
+        panel_axes.plot(
+            *dead_end_points[in_window].T, 'o', ms=5.5, color=dead_end_color, mec=surface_color, mew=1.1, zorder=3
+        )
 
-        ax.set_xlim(x0, x1)
-        ax.set_ylim(y0, y1)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for side in ax.spines.values():
-            side.set_color(hair)
+        panel_axes.set_xlim(window_min_x, window_max_x)
+        panel_axes.set_ylim(window_min_y, window_max_y)
+        panel_axes.set_xticks([])
+        panel_axes.set_yticks([])
+        for spine in panel_axes.spines.values():
+            spine.set_color(hairline_color)
 
-        text(panel_x, 1.22, name, fontsize=11, color=ink, weight='semibold')
-        text(panel_x, 1.45, f'F1 {score(pred, lines)["f5"]:.2f} · {dead_ends(pred):,} dead ends', fontsize=9.5)
+        panel_f1 = score(predicted_lines, centerlines)['f5']
+        place_text(panel_left, 1.22, method_name, fontsize=11, color=ink_color, weight='semibold')
+        place_text(panel_left, 1.45, f'F1 {panel_f1:.2f} · {dead_ends(predicted_lines):,} dead ends', fontsize=9.5)
 
-    noisy = [row for row in rows if row['source'] == 'noisy mask' and row['case'] in ('roads', 'mixed', 'river')]
-    timed = [row for row in rows if row['source'] == 'noisy mask' and row['case'] == 'roads']
-    true_dead = np.mean([row['true_dead'] for row in noisy if row['method'] == names[0]])
-    charts = [
+    noisy_results = [
+        result
+        for result in results
+        if result['source'] == 'noisy mask' and result['case'] in ('roads', 'mixed', 'river')
+    ]
+    timed_results = [result for result in results if result['source'] == 'noisy mask' and result['case'] == 'roads']
+
+    def method_mean(subset: list[Result], key: str, method_name: str) -> float:
+        return np.mean([result[key] for result in subset if result['method'] == method_name])
+
+    mean_true_dead_ends = method_mean(noisy_results, 'true_dead', method_names[0])
+    chart_specs = [
         (
             'F1 @ 5 m',
             'higher is better',
-            [np.mean([row['f5'] for row in noisy if row['method'] == method]) for method in names],
+            [method_mean(noisy_results, 'f5', method_name) for method_name in method_names],
             False,
             '{:.3f}',
         ),
         (
             'Dead ends',
-            f'closer to the true {true_dead:.1f} is better',
-            [np.mean([row['dead'] for row in noisy if row['method'] == method]) for method in names],
+            f'closer to the true {mean_true_dead_ends:.1f} is better',
+            [method_mean(noisy_results, 'dead', method_name) for method_name in method_names],
             True,
             '{:,.0f}',
         ),
         (
             'Runtime, 1.2 Mpx mask',
             'lower is better',
-            [1000 * np.mean([row['time'] for row in timed if row['method'] == method]) for method in names],
+            [1000 * method_mean(timed_results, 'time', method_name) for method_name in method_names],
             True,
             '{:,.0f} ms',
         ),
     ]
 
-    top, names_w, chart_gap, chart_h = 5.45, 1.45, 0.4, 1.6
-    chart_w = (fig_w - left - names_w - right - 2 * chart_gap) / 3
-    text(
-        left,
-        top - 0.75,
+    charts_top, label_column_width, chart_gap, chart_height = 5.45, 1.45, 0.4, 1.6
+    chart_width = (figure_width - left_margin - label_column_width - right_margin - 2 * chart_gap) / 3
+    place_text(
+        left_margin,
+        charts_top - 0.75,
         'Noisy masks, means over the 1 km road networks, mixed-width road networks and rivers',
         fontsize=10,
     )
 
-    ys = np.arange(len(names))[::-1]
-    for index, (title, hint, values, log, fmt) in enumerate(charts):
-        chart_x = left + names_w + index * (chart_w + chart_gap)
-        ax = fig.add_axes(at(chart_x, top, chart_w, chart_h))
-        ax.set_facecolor(surface)
+    row_positions = np.arange(len(method_names))[::-1]
+    for chart_index, (chart_title, chart_hint, chart_values, use_log_scale, value_format) in enumerate(chart_specs):
+        chart_left = left_margin + label_column_width + chart_index * (chart_width + chart_gap)
+        chart_axes = fig.add_axes(figure_box(chart_left, charts_top, chart_width, chart_height))
+        chart_axes.set_facecolor(surface_color)
 
-        lo, hi = (min(values) / 2.2, max(values) * 4.5) if log else (0.4, 1.04)
-        if log:
-            ax.set_xscale('log')
+        x_min, x_max = (min(chart_values) / 2.2, max(chart_values) * 4.5) if use_log_scale else (0.4, 1.04)
+        if use_log_scale:
+            chart_axes.set_xscale('log')
 
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(-0.55, len(names) - 0.45)
-        for row_y in ys:
-            ax.axhline(row_y, color=hair, lw=0.8, zorder=0)
+        chart_axes.set_xlim(x_min, x_max)
+        chart_axes.set_ylim(-0.55, len(method_names) - 0.45)
+        for row_y in row_positions:
+            chart_axes.axhline(row_y, color=hairline_color, lw=0.8, zorder=0)
 
-        if title == 'Dead ends':
-            ax.axvline(true_dead, color=muted, lw=0.9, zorder=1)
+        if chart_title == 'Dead ends':
+            chart_axes.axvline(mean_true_dead_ends, color=muted_color, lw=0.9, zorder=1)
 
-        for row_y, value, name in zip(ys, values, names):
-            lead = name == 'crestline'
-            ax.plot([value], [row_y], 'o', ms=8.5, color=blue if lead else other, mec=surface, mew=1.8, zorder=3)
-
-            below = title == 'Dead ends' and value < true_dead
-            shift = (1 / 1.2 if below else 1.2) if log else 0.02
-            ax.text(
-                value * shift if log else value + shift,
-                row_y,
-                fmt.format(value),
-                va='center',
-                ha='right' if below else 'left',
-                fontsize=9,
-                color=ink if lead else ink2,
-                weight='semibold' if lead else 'normal',
+        for row_y, value, method_name in zip(row_positions, chart_values, method_names):
+            is_crestline = method_name == 'crestline'
+            chart_axes.plot(
+                [value],
+                [row_y],
+                'o',
+                ms=8.5,
+                color=accent_color if is_crestline else neutral_color,
+                mec=surface_color,
+                mew=1.8,
+                zorder=3,
             )
 
-        ax.set_yticks([])
-        if index == 0:
-            for row_y, name in zip(ys, names):
-                ax.text(
+            is_below_truth = chart_title == 'Dead ends' and value < mean_true_dead_ends
+            label_offset = (1 / 1.2 if is_below_truth else 1.2) if use_log_scale else 0.02
+            chart_axes.text(
+                value * label_offset if use_log_scale else value + label_offset,
+                row_y,
+                value_format.format(value),
+                va='center',
+                ha='right' if is_below_truth else 'left',
+                fontsize=9,
+                color=ink_color if is_crestline else secondary_ink_color,
+                weight='semibold' if is_crestline else 'normal',
+            )
+
+        chart_axes.set_yticks([])
+        if chart_index == 0:
+            for row_y, method_name in zip(row_positions, method_names):
+                chart_axes.text(
                     -0.04,
                     row_y,
-                    name,
-                    transform=ax.get_yaxis_transform(),
+                    method_name,
+                    transform=chart_axes.get_yaxis_transform(),
                     ha='right',
                     va='center',
                     fontsize=9.5,
-                    color=ink if name == 'crestline' else ink2,
+                    color=ink_color if method_name == 'crestline' else secondary_ink_color,
                 )
 
-        ax.tick_params(axis='x', length=0, labelsize=8.5, labelcolor=muted, pad=5)
-        if log:
-            ticks = [tick for tick in (1, 10, 100, 1000, 10000) if lo <= tick <= hi]
-            ax.xaxis.set_major_locator(FixedLocator(ticks))
-            ax.xaxis.set_minor_locator(NullLocator())
-            ax.set_xticklabels([f'{tick:,}' for tick in ticks])
+        chart_axes.tick_params(axis='x', length=0, labelsize=8.5, labelcolor=muted_color, pad=5)
+        if use_log_scale:
+            tick_values = [tick for tick in (1, 10, 100, 1000, 10000) if x_min <= tick <= x_max]
+            chart_axes.xaxis.set_major_locator(FixedLocator(tick_values))
+            chart_axes.xaxis.set_minor_locator(NullLocator())
+            chart_axes.set_xticklabels([f'{tick:,}' for tick in tick_values])
         else:
-            ax.xaxis.set_major_locator(FixedLocator([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]))
+            chart_axes.xaxis.set_major_locator(FixedLocator([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]))
 
         for side in ('top', 'right', 'left'):
-            ax.spines[side].set_visible(False)
+            chart_axes.spines[side].set_visible(False)
 
-        ax.spines['bottom'].set_color(axis)
-        text(chart_x, top - 0.38, title, fontsize=10.5, color=ink, weight='semibold')
-        text(chart_x, top - 0.16, hint, fontsize=8.5, color=muted)
+        chart_axes.spines['bottom'].set_color(axis_color)
+        place_text(chart_left, charts_top - 0.38, chart_title, fontsize=10.5, color=ink_color, weight='semibold')
+        place_text(chart_left, charts_top - 0.16, chart_hint, fontsize=8.5, color=muted_color)
 
-    fig.savefig(OUTPUT_DIR / 'synthetic_benchmark.png', dpi=200, facecolor=surface)
+    figure_path = OUTPUT_DIR / 'synthetic_benchmark.png'
+    fig.savefig(figure_path, dpi=200, facecolor=surface_color)
     plt.close(fig)
+    logger.info(f'Saved benchmark figure to {figure_path}')
 
 
-def cuda_figure(rows, gpu):
-    import matplotlib
+def cuda_benchmark_figure(results: list[Result], gpu_name: str) -> None:
+    surface_color, hairline_color, axis_color = '#fcfcfb', '#e1e0d9', '#c3c2b7'
+    ink_color, secondary_ink_color, muted_color = '#0b0b0b', '#52514e', '#898781'
+    accent_color, neutral_color = '#2a78d6', '#aeaca5'
 
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    from matplotlib import font_manager
-    from matplotlib.ticker import FixedLocator
-    from matplotlib.ticker import NullLocator
+    plt.rcParams.update({'font.size': 9, 'text.color': secondary_ink_color})
 
-    surface, hair, axis = '#fcfcfb', '#e1e0d9', '#c3c2b7'
-    ink, ink2, muted = '#0b0b0b', '#52514e', '#898781'
-    blue, other = '#2a78d6', '#aeaca5'
-
-    installed = {font.name for font in font_manager.fontManager.ttflist}
-    fonts = ['Inter', 'DejaVu Sans'] if 'Inter' in installed else ['DejaVu Sans']
-    plt.rcParams.update({'font.family': fonts, 'font.size': 9, 'text.color': ink2})
-
-    names = {
+    case_labels = {
         'river': 'rivers',
         'roads': 'road networks',
         'mixed': 'mixed-width roads',
         'roads-large': '4 km road network',
-        'roads-xl': '8 km road network',
     }
-    mpx = {
-        case: np.mean([row['mpx'] for row in rows if row['case'] == case])
-        for case in {row['case'] for row in rows if row['method'] == CUDA}
+    cuda_cases = {result['case'] for result in results if result['method'] == CUDA_METHOD}
+    mean_mpx = {
+        case_kind: np.mean([result['mpx'] for result in results if result['case'] == case_kind])
+        for case_kind in cuda_cases
     }
-    cases = sorted(mpx, key=mpx.get)
-    same = [row['same'] for row in rows if row['method'] == CUDA]
+    ordered_cases = sorted(mean_mpx, key=mean_mpx.get)
+    cuda_matches = [result['same'] for result in results if result['method'] == CUDA_METHOD]
 
-    def mean(case, source, method):
+    def mean_runtime_ms(case_kind: str, source: str, method_name: str) -> float:
         return 1000 * np.mean(
-            [row['time'] for row in rows if (row['case'], row['source'], row['method']) == (case, source, method)]
+            [
+                result['time']
+                for result in results
+                if (result['case'], result['source'], result['method']) == (case_kind, source, method_name)
+            ]
         )
 
-    fig_w, fig_h, left, right, names_w, gap = 12.0, 2.0 + 0.42 * len(cases), 0.45, 0.25, 2.1, 0.5
-    chart_w, chart_h, top = (fig_w - left - names_w - right - gap) / 2, 0.42 * len(cases), 1.5
-    fig = plt.figure(figsize=(fig_w, fig_h), facecolor=surface)
+    figure_width, left_margin, right_margin, label_column_width, chart_gap = 12.0, 0.45, 0.25, 2.1, 0.5
+    chart_height = 0.42 * len(ordered_cases)
+    figure_height = 2.0 + chart_height
+    chart_width = (figure_width - left_margin - label_column_width - right_margin - chart_gap) / 2
+    charts_top = 1.5
+    fig = plt.figure(figsize=(figure_width, figure_height), facecolor=surface_color)
 
-    def text(pos_x, pos_y, label, **kwargs):
-        fig.text(pos_x / fig_w, 1 - pos_y / fig_h, label, **kwargs)
+    def place_text(left_inches: float, top_inches: float, label: str, **kwargs: Any) -> None:
+        fig.text(left_inches / figure_width, 1 - top_inches / figure_height, label, **kwargs)
 
-    verdict = 'same lines in all' if all(same) else f'different lines in {same.count(False)} of'
-    text(left, 0.5, 'crestline on the CPU and on CUDA', fontsize=14, color=ink, weight='semibold')
-    text(
-        left,
+    if all(cuda_matches):
+        match_summary = 'same lines in all'
+    else:
+        match_summary = f'different lines in {cuda_matches.count(False)} of'
+
+    place_text(left_margin, 0.5, 'crestline on the CPU and on CUDA', fontsize=14, color=ink_color, weight='semibold')
+    place_text(
+        left_margin,
         0.78,
-        f'CPU with {os.cpu_count()} cores · {gpu} · best runtime per shape, '
-        f'averaged over seeds · {verdict} {len(same)} runs',
+        f'CPU with {os.cpu_count()} cores · {gpu_name} · best runtime per shape, '
+        f'averaged over seeds · {match_summary} {len(cuda_matches)} runs',
         fontsize=10,
     )
 
-    for index, (name, color) in enumerate((('CUDA', blue), ('CPU', other))):
-        key_x = fig_w - right - index * 0.95
-        text(key_x, 0.78, name, fontsize=9, ha='right')
+    for legend_index, (legend_label, legend_color) in enumerate((('CUDA', accent_color), ('CPU', neutral_color))):
+        legend_right = figure_width - right_margin - legend_index * 0.95
+        place_text(legend_right, 0.78, legend_label, fontsize=9, ha='right')
         fig.lines.append(
             plt.Line2D(
-                [(key_x - 0.5) / fig_w],
-                [1 - 0.745 / fig_h],
+                [(legend_right - 0.5) / figure_width],
+                [1 - 0.745 / figure_height],
                 marker='o',
                 ms=7,
-                color=color,
-                mec=surface,
+                color=legend_color,
+                mec=surface_color,
                 mew=1.4,
                 transform=fig.transFigure,
             )
         )
 
-    ys = np.arange(len(cases))[::-1]
-    for index, source in enumerate(('polygon', 'noisy mask')):
-        on_cpu = [mean(case, source, 'crestline') for case in cases]
-        on_gpu = [mean(case, source, CUDA) for case in cases]
-        chart_x = left + names_w + index * (chart_w + gap)
+    row_positions = np.arange(len(ordered_cases))[::-1]
+    for chart_index, source in enumerate(('polygon', 'noisy mask')):
+        cpu_runtimes = [mean_runtime_ms(case_kind, source, 'crestline') for case_kind in ordered_cases]
+        gpu_runtimes = [mean_runtime_ms(case_kind, source, CUDA_METHOD) for case_kind in ordered_cases]
+        chart_left = left_margin + label_column_width + chart_index * (chart_width + chart_gap)
 
-        ax = fig.add_axes([chart_x / fig_w, 1 - (top + chart_h) / fig_h, chart_w / fig_w, chart_h / fig_h])
-        ax.set_facecolor(surface)
-        ax.set_xscale('log')
-        lo, hi = min(on_cpu + on_gpu) / 2.5, max(on_cpu + on_gpu) * 7
-        ax.set_xlim(lo, hi)
-        ax.set_ylim(-0.55, len(cases) - 0.45)
+        chart_axes = fig.add_axes(
+            [
+                chart_left / figure_width,
+                1 - (charts_top + chart_height) / figure_height,
+                chart_width / figure_width,
+                chart_height / figure_height,
+            ]
+        )
+        chart_axes.set_facecolor(surface_color)
+        chart_axes.set_xscale('log')
+        x_min, x_max = min(cpu_runtimes + gpu_runtimes) / 2.5, max(cpu_runtimes + gpu_runtimes) * 7
+        chart_axes.set_xlim(x_min, x_max)
+        chart_axes.set_ylim(-0.55, len(ordered_cases) - 0.45)
 
-        for row_y, cpu_ms, gpu_ms in zip(ys, on_cpu, on_gpu):
-            ax.axhline(row_y, color=hair, lw=0.8, zorder=0)
-            ax.plot([cpu_ms, gpu_ms], [row_y, row_y], color=axis, lw=2, solid_capstyle='round', zorder=1)
-            ax.plot([cpu_ms], [row_y], 'o', ms=8.5, color=other, mec=surface, mew=1.8, zorder=3)
-            ax.plot([gpu_ms], [row_y], 'o', ms=8.5, color=blue, mec=surface, mew=1.8, zorder=3)
-
-            speed = f'{cpu_ms / gpu_ms:.1f}× faster' if cpu_ms >= gpu_ms else f'{gpu_ms / cpu_ms:.1f}× slower'
-            if max(cpu_ms, gpu_ms) < 1.05 * min(cpu_ms, gpu_ms):
-                speed = 'same'
-
-            ax.text(
-                max(cpu_ms, gpu_ms) * 1.25,
-                row_y,
-                f'{gpu_ms:,.0f} ms · {speed}',
-                va='center',
-                fontsize=9,
-                color=ink,
+        for row_y, cpu_runtime_ms, gpu_runtime_ms in zip(row_positions, cpu_runtimes, gpu_runtimes):
+            chart_axes.axhline(row_y, color=hairline_color, lw=0.8, zorder=0)
+            chart_axes.plot(
+                [cpu_runtime_ms, gpu_runtime_ms],
+                [row_y, row_y],
+                color=axis_color,
+                lw=2,
+                solid_capstyle='round',
+                zorder=1,
+            )
+            chart_axes.plot(
+                [cpu_runtime_ms], [row_y], 'o', ms=8.5, color=neutral_color, mec=surface_color, mew=1.8, zorder=3
+            )
+            chart_axes.plot(
+                [gpu_runtime_ms], [row_y], 'o', ms=8.5, color=accent_color, mec=surface_color, mew=1.8, zorder=3
             )
 
-        if index == 0:
-            for row_y, case in zip(ys, cases):
-                ax.text(
+            if cpu_runtime_ms >= gpu_runtime_ms:
+                speed_label = f'{cpu_runtime_ms / gpu_runtime_ms:.1f}× faster'
+            else:
+                speed_label = f'{gpu_runtime_ms / cpu_runtime_ms:.1f}× slower'
+
+            if max(cpu_runtime_ms, gpu_runtime_ms) < 1.05 * min(cpu_runtime_ms, gpu_runtime_ms):
+                speed_label = 'same'
+
+            chart_axes.text(
+                max(cpu_runtime_ms, gpu_runtime_ms) * 1.25,
+                row_y,
+                f'{gpu_runtime_ms:,.0f} ms · {speed_label}',
+                va='center',
+                fontsize=9,
+                color=ink_color,
+            )
+
+        if chart_index == 0:
+            for row_y, case_kind in zip(row_positions, ordered_cases):
+                chart_axes.text(
                     -0.04,
                     row_y,
-                    f'{names.get(case, case)} ({mpx[case]:.1f} Mpx)',
-                    transform=ax.get_yaxis_transform(),
+                    f'{case_labels.get(case_kind, case_kind)} ({mean_mpx[case_kind]:.1f} Mpx)',
+                    transform=chart_axes.get_yaxis_transform(),
                     ha='right',
                     va='center',
                     fontsize=9.5,
                 )
 
-        ax.set_yticks([])
-        ticks = [tick for tick in (1, 10, 100, 1000, 10000) if lo <= tick <= hi]
-        ax.xaxis.set_major_locator(FixedLocator(ticks))
-        ax.xaxis.set_minor_locator(NullLocator())
-        ax.set_xticklabels([f'{tick:,} ms' for tick in ticks])
-        ax.tick_params(axis='x', length=0, labelsize=8.5, labelcolor=muted, pad=5)
+        chart_axes.set_yticks([])
+        tick_values = [tick for tick in (1, 10, 100, 1000, 10000) if x_min <= tick <= x_max]
+        chart_axes.xaxis.set_major_locator(FixedLocator(tick_values))
+        chart_axes.xaxis.set_minor_locator(NullLocator())
+        chart_axes.set_xticklabels([f'{tick:,} ms' for tick in tick_values])
+        chart_axes.tick_params(axis='x', length=0, labelsize=8.5, labelcolor=muted_color, pad=5)
 
         for side in ('top', 'right', 'left'):
-            ax.spines[side].set_visible(False)
+            chart_axes.spines[side].set_visible(False)
 
-        ax.spines['bottom'].set_color(axis)
-        text(chart_x, top - 0.22, f'Runtime, {source}', fontsize=10.5, color=ink, weight='semibold')
+        chart_axes.spines['bottom'].set_color(axis_color)
+        place_text(
+            chart_left, charts_top - 0.22, f'Runtime, {source}', fontsize=10.5, color=ink_color, weight='semibold'
+        )
 
-    fig.savefig(OUTPUT_DIR / 'synthetic_benchmark_cuda.png', dpi=200, facecolor=surface)
+    figure_path = OUTPUT_DIR / 'synthetic_benchmark_cuda.png'
+    fig.savefig(figure_path, dpi=200, facecolor=surface_color)
     plt.close(fig)
+    logger.info(f'Saved CUDA comparison figure to {figure_path}')
 
 
-def table(rows):
+def table(results: list[Result]) -> None:
     summary = (
-        pd.DataFrame(rows)
+        pd.DataFrame(results)
         .groupby(['case', 'source', 'method'], sort=False)
         .agg(
             mpx=('mpx', 'mean'),
@@ -784,7 +943,7 @@ def table(rows):
     )
     summary['runtime_ms'] *= 1000
 
-    digits = {
+    decimal_places = {
         'mpx': 2,
         'f1_5m': 4,
         'f1_2m': 4,
@@ -795,17 +954,31 @@ def table(rows):
         'holes': 1,
         'runtime_ms': 2,
     }
-    summary.round(digits).to_csv(OUTPUT_DIR / 'synthetic_benchmark_results.csv', index=False, lineterminator='\n')
+    table_path = OUTPUT_DIR / 'synthetic_benchmark_results.csv'
+    summary.round(decimal_places).to_csv(table_path, index=False, lineterminator='\n')
+    logger.info(f'Wrote {len(summary)} summary rows to {table_path}')
 
 
 def main(
-    cases=None,
-    seeds=None,
-    large_seeds=None,
+    cases: list[str] | None = None,
+    seeds: list[int] | None = None,
+    large_seeds: list[int] | None = None,
     repeat: int = 3,
-):
+    log_level: str = 'INFO',
+) -> None:
+    """Run the synthetic centerline benchmark and write the summary table and figures to ``output/``.
+
+    :param cases: Case kinds to run; defaults to: 'roads', 'mixed', 'river' and 'roads-large'
+    :param seeds: Seeds for the 1 km cases; defaults to 0 through 5
+    :param large_seeds: Seeds for the 4 km and 8 km road networks; defaults to 1 and 2
+    :param repeat: Timed runs per method and input; the fastest one is kept
+    :param log_level: Level for the benchmark's own log messages, such as DEBUG, INFO or WARNING
+    """
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S')
+    logger.setLevel(log_level.upper())
+
     if cases is None:
-        cases = ['roads', 'mixed', 'river', 'roads-large', 'roads-xl']
+        cases = ['roads', 'mixed', 'river', 'roads-large']
 
     if seeds is None:
         seeds = [0, 1, 2, 3, 4, 5]
@@ -813,21 +986,34 @@ def main(
     if large_seeds is None:
         large_seeds = [1, 2]
 
-    gpu, reason = cuda_device()
-    tqdm.write(f'CUDA: {gpu}' if gpu else f'CUDA: off ({reason}), running on the CPU only')
-    with_cuda = bool(gpu)
-    ms = methods(with_cuda)
+    gpu_name, cuda_failure_reason = cuda_device()
+    if gpu_name:
+        logger.info(f'CUDA: {gpu_name}')
+    else:
+        logger.info(f'CUDA: off ({cuda_failure_reason}), running on the CPU only')
 
-    plan = [(case, seed) for case in cases for seed in (large_seeds if case.startswith('roads-') else seeds)]
-    rows = run(plan, ms, repeat)
+    cuda_available = bool(gpu_name)
+    method_registry = methods(cuda_available)
+    logger.info(f'Methods: {", ".join(method_registry)}')
 
-    table(rows)
+    plan = [
+        (case_kind, seed) for case_kind in cases for seed in (large_seeds if case_kind.startswith('roads-') else seeds)
+    ]
+    logger.info(f'Plan: {len(plan)} cases over {", ".join(cases)}, {repeat} timed repeats per run')
+
+    started = time.perf_counter()
+    with logging_redirect_tqdm():
+        results = run(plan, method_registry, repeat)
+
+    logger.info(f'Benchmark finished in {time.perf_counter() - started:.1f} s with {len(results)} results')
+
+    table(results)
 
     if 'roads' in cases:
-        figure(rows, ms)
+        figure(results, method_registry)
 
-    if with_cuda:
-        cuda_figure(rows, gpu)
+    if cuda_available:
+        cuda_benchmark_figure(results, gpu_name)
 
 
 if __name__ == '__main__':
