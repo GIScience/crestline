@@ -34,8 +34,7 @@ uv sync --extra cu13
 
 Synthetic shapes with known centerlines at 1 m pixels:
 - 1 km road networks (15 m half-width),
-- 1 km road networks with  mixed half-widths (6 to 30 m) and 1 km tapering rivers (5 to 30 m), six seeds each, plus 4 km and 8 km road networks
-(17 and 66 Mpx, two seeds each).
+- 1 km road networks with  mixed half-widths (6 to 30 m) and 1 km tapering rivers (5 to 30 m), six seeds each, plus a 4 km road network.
 
 Every shape is traced as the clean polygon and as a noisy raster mask (about 2.5 m of
 boundary noise), and scored against the true centerlines. Scores are means over the 1 km shapes; runtimes are the best of
@@ -48,9 +47,8 @@ three runs after a warm-up (one run for Voronoi) on a 24-core CPU. Best in bold.
 | Mean offset, polygon / noisy mask             | **0.55 m** / **1.32 m** | 1.59 m / 1.71 m     | 0.77 m / 1.53 m     | 0.58 m / 2.11 m      |
 | Dead ends, polygon / noisy mask (true: 11.4)  | **11.2** / **19.2**     | 11.8 / 134.6        | 11.1 / 44.1         | 257.2 / 3488.4       |
 | Loops, polygon / noisy mask (true holes: 3.8) | 4.3 / **4.7**           | **4.0** / 19.6      | 5.9 / 40.8          | 4.3 / 25.4           |
-| Runtime, 1.2 Mpx, polygon / noisy mask        | **11 ms** / **13 ms**   | 38 ms / 460 ms      | 94 ms / 90 ms       | 249 ms / 1.1 s       |
-| Runtime, 17 Mpx, polygon / noisy mask         | **172 ms** / **175 ms** | 277 ms / 10.6 s     | 1.4 s / 1.3 s       | -                    |
-| Runtime, 66 Mpx, polygon / noisy mask         | **835 ms** / **886 ms** | -                   | -                   | -                    |
+| Runtime, 1.2 Mpx, polygon / noisy mask        | **11 ms** / **12 ms**   | 30 ms / 375 ms      | 78 ms / 75 ms       | 211 ms / 921 ms      |
+| Runtime, 17 Mpx, polygon / noisy mask         | **130 ms** / **147 ms** | 216 ms / 8.2 s      | 1.1 s / 1.1 s       | 3.6 s / 51.3 s       |
 
 ### CUDA
 
