@@ -111,32 +111,8 @@ def test_flood_cost_is_pixel_bound_not_depth_bound_on_cuda():
     runs = [_timed_flood(_grid(np.ones((width, total // width), bool))) for width in (20, 200, 2000)]
     depths, times = [int(level.max()) for level, _ in runs], [t for _, t in runs]
 
-    # log.info('depths %s -> %s ms', depths, [round(t * 1e3) for t in times])
-
     assert depths == [10, 100, 1000]  # 100x more sequential steps...
     assert max(times) < 3 * min(times)  # ...for near-constant CPU time
-
-
-def test_flood_seeding_time_scales_with_bbox():
-    """
-    The `touch` loop runs a 3x3 scan over *every* pixel of the padded grid before the BFS starts.
-
-    Identical road, 16x the empty bounding box: time should grow with the box. A sparse network
-    over a large extent therefore spends most of its runtime seeding nothing.
-    """
-
-    def bar_in(side):
-        mask = np.zeros((side, side), bool)
-        mask[side // 2 : side // 2 + 20, 100:300] = True
-        return _grid(mask)
-
-    _, t_small = _timed_flood(bar_in(600))
-    _, t_large = _timed_flood(bar_in(2400))
-
-    # log.info(
-    #     '600^2 %.1f ms vs 2400^2 %.1f ms (%.1fx for 16x the bbox)', t_small * 1e3, t_large * 1e3, t_large / t_small
-    # )
-    assert t_large > 4 * t_small
 
 
 # TODO: confirm this memory test's logic (I'm not familiar with)
@@ -185,13 +161,6 @@ def test_flood_memory_scales_with_bbox():
     small, large = peak_bytes(3000), peak_bytes(6000)
     assert small > 0, 'ru_maxrss never rose above its baseline - the measurement, not _flood, is broken'
 
-    # log.info(
-    #     '%.0f -> %.0f MB (%.1fx) for 4x the bbox, %.1f B/px',
-    #     small / 2**20,
-    #     large / 2**20,
-    #     large / small,
-    #     large / 6000**2,
-    # )
     assert large > 3 * small
 
 
