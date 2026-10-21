@@ -4,6 +4,9 @@ authors:
 - family-names: "Adamiak"
   given-names: "Maciej"
   orcid: "https://orcid.org/0000-0000-0000-0000"
+- family-names: "Kong"
+  given-names: "Gefei"
+  orcid: "https://orcid.org/0000-0000-0000-0000"
 title: "Crestline - polygon centerlines by flooding:"
 version: 0.1.0
 date-released: 2026-10-15
