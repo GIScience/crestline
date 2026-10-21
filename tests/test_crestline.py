@@ -53,15 +53,19 @@ def test_project_geographic_polygon():
 
 
 def test_project_projected_polygon():
-    # proj_polygon in 25832: box(xmin=476928, ymin=5473720, xmax=477208, ymax=5473829), wdith = 280, height = 109
-    expected_w, expected_h = 280, 109
     polygon = box(xmin=476928, ymin=5473720, xmax=477208, ymax=5473829)  #
     proj_polygon, proj_crs = _project(polygon, crs=25832)
 
-    proj_bounds = proj_polygon.bounds
-    w, h = proj_bounds[2] - proj_bounds[0], proj_bounds[3] - proj_bounds[1]
-    assert (w, h) == (expected_w, expected_h)
+    assert polygon == proj_polygon
     assert isinstance(proj_crs, CRS)
+
+
+def test_project_polygon_with_no_crs():
+    polygon = box(xmin=476928, ymin=5473720, xmax=477208, ymax=5473829)  #
+    proj_polygon, proj_crs = _project(polygon, crs=None)
+
+    assert polygon == proj_polygon
+    assert proj_crs is None
 
 
 def test_grid():
