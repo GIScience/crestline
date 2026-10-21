@@ -3,11 +3,11 @@ message: "If you use this software, please cite it as below."
 authors:
 - family-names: "Adamiak"
   given-names: "Maciej"
-  orcid: "https://orcid.org/0000-0000-0000-0000"
+  orcid: "https://orcid.org/0000-0002-8229-9661"
 - family-names: "Kong"
   given-names: "Gefei"
-  orcid: "https://orcid.org/0000-0000-0000-0000"
-title: "Crestline - polygon centerlines by flooding:"
+  orcid: "https://orcid.org/0000-0002-4641-7456"
+title: "Crestline - polygon centerlines by flooding"
 version: 0.1.0
 date-released: 2026-10-15
-url: "https://github.com/maciej-adamiak/crestline"
+url: "https://github.com/giscience/crestline"
