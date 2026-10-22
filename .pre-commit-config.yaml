@@ -10,7 +10,6 @@ repos:
       - id: check-yaml
         exclude: ^.venv*|out
       - id: check-case-conflict
-      - id: check-docstring-first
       - id: check-vcs-permalinks
       - id: debug-statements
       - id: detect-private-key

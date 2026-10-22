@@ -417,7 +417,7 @@ def crestline(
             raise ValueError('mask must be 2D')
 
     if device == 'cuda':
-        from .cuda import flood
+        from .crestline_cuda import flood
 
         depth, crest = flood(mask)
     elif device == 'cpu':

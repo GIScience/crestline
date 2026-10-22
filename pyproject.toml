@@ -1,23 +1,39 @@
 [project]
-name = "crestaxis"
+name = "crestline"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.11.2",
     "numba>=0.68.0",
     "numpy>=2.5.4",
-    "pre-commit>=4.7.0",
-    "pytest>=9.1.1",
-    "rasterio>=1.5.2",
     "scipy>=1.18.1",
     "scipy-stubs~=1.18.1",
     "shapely>=2.2.0",
 ]
 
+[tool.setuptools]
+py-modules = ['crestline']
+
 [project.optional-dependencies]
+benchmark = [
+        "centerline>=1.1.1",
+        "label-centerlines>=2022.6.0",
+        "jsonargparse>=4.52.0",
+        "pygeoops>=0.6.0",
+        "rasterio>=1.5.2",
+        "skan>=0.13.1",
+        "tqdm>=4.70.1",
+]
 cpu = []
 cu12 = ["numba-cuda[cu12]>=0.30.4"]
 cu13 = ["numba-cuda[cu13]>=0.30.4"]
+dev = [
+    "pandas>=3.0.6",
+    "pre-commit>=4.7.0",
+    "pytest>=9.1.1",
+    "rasterio>=1.5.2",
+]
 
 [tool.uv]
 conflicts = [[{ extra = "cpu" }, { extra = "cu12" }, { extra = "cu13" }]]
+package = true
