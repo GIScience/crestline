@@ -5,12 +5,38 @@ import numpy as np
 import shapely
 from numba import jit
 from numba import prange
+from pyproj import CRS
+from pyproj import Transformer
+from pyproj.crs import ProjectedCRS
+from pyproj.crs.coordinate_operation import AzimuthalEquidistantConversion
 from scipy.spatial import cKDTree
 from shapely import MultiLineString
 from shapely import Polygon
 from shapely import linestrings
 from shapely import multilinestrings
+from shapely import transform
 from shapely.geometry.multipolygon import MultiPolygon
+
+
+def _project(polygon: Polygon | MultiPolygon, crs: int | None) -> tuple[Polygon | MultiPolygon, CRS | None]:
+    if crs is None or CRS.from_epsg(crs).is_projected:
+        return polygon, crs if crs is None else CRS.from_epsg(crs)
+
+    crs = CRS.from_epsg(crs)
+    lon, lat = polygon.centroid.coords[0]
+
+    proj_crs = ProjectedCRS(
+        name=f'aeqd {lat:.6f} {lon:.6f}',
+        conversion=AzimuthalEquidistantConversion(latitude_natural_origin=lat, longitude_natural_origin=lon),
+        geodetic_crs=crs,
+    )
+
+    return _reproject_crs(polygon, crs, proj_crs), proj_crs
+
+
+def _reproject_crs(geom: shapely.Geometry, src_crs: CRS, dst_crs: CRS) -> shapely.Geometry:
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    return transform(geom, transformer.transform, interleaved=False)
 
 
 @jit(parallel=True, cache=True)
@@ -379,6 +405,7 @@ def _despur(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, near: np
 
 def crestline(
     source,
+    epsg_crs: int | None = None,
     resolution: float | None = None,
     transform=None,
     simplify: float = 0.0,
@@ -409,6 +436,7 @@ def crestline(
         if source.is_empty:
             return MultiLineString()
 
+        source, proj_crs = _project(source, epsg_crs)
         mask, (left, top) = _rasterize(source, resolution)
         grid = (left, top, resolution)
     else:
@@ -468,5 +496,7 @@ def crestline(
     lines = shapely.line_merge(multilinestrings(linestrings(xy[pairs])))
     if simplify:
         lines = lines.simplify(simplify)
+    if epsg_crs is not None and CRS.from_epsg(epsg_crs).is_geographic:
+        lines = _reproject_crs(lines, src_crs=proj_crs, dst_crs=CRS.from_epsg(epsg_crs))
 
     return lines if isinstance(lines, MultiLineString) else MultiLineString([lines])

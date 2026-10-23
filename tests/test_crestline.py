@@ -4,11 +4,14 @@ import matplotlib
 import shapely
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Rectangle
+from pyproj import CRS
+from pyproj import Geod
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
 from shapely import LineString
 from shapely import MultiLineString
 from shapely import Point
+from shapely import box
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -18,6 +21,7 @@ import pytest
 from crestline.crestline import _crests
 from crestline.crestline import _flood
 from crestline.crestline import _grid
+from crestline.crestline import _project
 from crestline.crestline import _rasterize
 from crestline.crestline import _ratio
 from crestline.crestline import crestline
@@ -32,6 +36,36 @@ def _mock_parallel_roads(gap, wide=60, narrow=12, length=400, margin=5):
     mask[margin : margin + wide, margin:-margin] = True
     mask[margin + wide + gap : margin + wide + gap + narrow, margin:-margin] = True
     return mask
+
+
+def test_project_geographic_polygon():
+    WGS84 = Geod(ellps='WGS84')
+    polygon = box(xmin=8.68189868, ymin=49.41572259, xmax=8.68576529, ymax=49.41671358)
+    west, south, east, north = polygon.bounds
+    expected_w = WGS84.inv(west, south, east, south)[2]
+    expected_h = WGS84.inv(west, south, west, north)[2]
+
+    proj_polygon, proj_crs = _project(polygon, crs=4326)
+
+    proj_bounds = proj_polygon.bounds
+    w, h = proj_bounds[2] - proj_bounds[0], proj_bounds[3] - proj_bounds[1]
+    assert (w, h) == pytest.approx((expected_w, expected_h), abs=0.01)
+
+
+def test_project_projected_polygon():
+    polygon = box(xmin=476928, ymin=5473720, xmax=477208, ymax=5473829)  #
+    proj_polygon, proj_crs = _project(polygon, crs=25832)
+
+    assert polygon == proj_polygon
+    assert isinstance(proj_crs, CRS)
+
+
+def test_project_polygon_with_no_crs():
+    polygon = box(xmin=476928, ymin=5473720, xmax=477208, ymax=5473829)  #
+    proj_polygon, proj_crs = _project(polygon, crs=None)
+
+    assert polygon == proj_polygon
+    assert proj_crs is None
 
 
 def test_grid():
