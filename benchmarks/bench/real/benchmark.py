@@ -97,8 +97,8 @@ def _square_window(center: Coordinate, offset: Coordinate, size: float) -> Windo
 def main(
     repeat: int = 3,
     seed: int = 0,
-    coarse_noise: float = 2.5,
-    fine_noise: float = 0.8,
+    coarse_noise: float = 0.15,
+    fine_noise: float = 0.05,
     time_limit: float = 600.0,
     panel_radius: int = 1,
     window_size: float = 400.0,
@@ -109,8 +109,8 @@ def main(
 
     :param repeat: Timed runs per method and input after one warm-up run; the fastest one is kept
     :param seed: Seed of the boundary noise added to the noisy masks
-    :param coarse_noise: Standard deviation in metres of the smooth boundary noise, as in the synthetic benchmark
-    :param fine_noise: Standard deviation in metres of the fine boundary noise, as in the synthetic benchmark
+    :param coarse_noise: Standard deviation of the smooth boundary noise as a fraction of the local road half-width
+    :param fine_noise: Standard deviation of the fine boundary noise as a fraction of the local road half-width
     :param time_limit: Seconds; a method and input whose best run takes longer is skipped on larger buffers
     :param panel_radius: Buffer radius in km of the scene drawn in the figure's map panels
     :param window_size: Side in metres of the map panels' window

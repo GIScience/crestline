@@ -120,7 +120,8 @@ def benchmark_figure(
     scene = make_scene(network, center, panel_radius_km, seed, noise)
     noisy_pieces = _count_pieces(scene.mask)
     clean_pieces = _count_pieces(burn_polygon(scene.polygon, scene.mask, scene.transform))
-    logger.info(f'Noise splits the {panel_radius_km} km buffer from {clean_pieces:,} into {noisy_pieces:,} pieces')
+
+    logger.info(f'Noise turns the {panel_radius_km} km buffer from {clean_pieces:,} into {noisy_pieces:,} pieces')
 
     canvas = Canvas(FIGURE_WIDTH, FIGURE_HEIGHT)
 
@@ -128,7 +129,7 @@ def benchmark_figure(
         canvas,
         map_window_title(window),
         f'Scores in each title are for the whole {panel_radius_km} km buffer: {scene.true_dead_ends:,} true dead '
-        f'ends, and the noise breaks it into {noisy_pieces:,} pieces.',
+        f'ends, and the noisy mask has {noisy_pieces:,} pieces.',
         LEFT_MARGIN,
         RIGHT_MARGIN,
     )

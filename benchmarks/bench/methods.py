@@ -6,7 +6,7 @@ import numpy as np
 import shapely
 from affine import Affine
 from bench.environment import logger
-from bench.rasters import burn_polygon
+from bench.rasters import rasterize_polygon
 from bench.rasters import vectorize
 from bench.scene import Shape
 from bench.skeleton import skeleton
@@ -32,15 +32,24 @@ class Method(NamedTuple):
 MethodRegistry: TypeAlias = dict[str, Method]
 
 
-def voronoi_centerline(geometry: Shape) -> Geometry:
+def voronoi_centerline(geometry: Shape, interpolation_distance: float) -> Geometry:
     if geometry.geom_type == 'MultiPolygon':
-        return shapely.union_all([voronoi_centerline(part) for part in geometry.geoms])
+        return shapely.union_all([voronoi_centerline(part, interpolation_distance) for part in geometry.geoms])
 
     try:
-        return Centerline(geometry, interpolation_distance=1.0).geometry
+        return Centerline(geometry, interpolation_distance=interpolation_distance).geometry
     except Exception as error:
         logger.debug(f'Voronoi centerline failed on a {geometry.area:.1f} m² part: {error}')
         return MultiLineString()
+
+
+def polygon_skeleton(polygon: Shape) -> Geometry:
+    mask, transform = rasterize_polygon(polygon, POLYGON_RESOLUTION_M)
+    return skeleton(mask, transform)
+
+
+def pixel_size(transform: Affine) -> float:
+    return abs(transform.a)
 
 
 def methods(with_cuda: bool = False) -> MethodRegistry:
@@ -50,16 +59,20 @@ def methods(with_cuda: bool = False) -> MethodRegistry:
             on_mask=lambda polygon, mask, transform: crestline(mask, transform=transform),
         ),
         'pygeoops.centerline': Method(
-            on_polygon=lambda polygon, mask, transform: pygeoops_centerline(polygon),
+            on_polygon=lambda polygon, mask, transform: pygeoops_centerline(
+                polygon, densify_distance=POLYGON_RESOLUTION_M
+            ),
             on_mask=lambda polygon, mask, transform: pygeoops_centerline(vectorize(mask, transform)),
         ),
         'skeletonize + prune': Method(
-            on_polygon=lambda polygon, mask, transform: skeleton(burn_polygon(polygon, mask, transform), transform),
+            on_polygon=lambda polygon, mask, transform: polygon_skeleton(polygon),
             on_mask=lambda polygon, mask, transform: skeleton(mask, transform),
         ),
         'centerline (Voronoi)': Method(
-            on_polygon=lambda polygon, mask, transform: voronoi_centerline(polygon),
-            on_mask=lambda polygon, mask, transform: voronoi_centerline(vectorize(mask, transform)),
+            on_polygon=lambda polygon, mask, transform: voronoi_centerline(polygon, POLYGON_RESOLUTION_M),
+            on_mask=lambda polygon, mask, transform: voronoi_centerline(
+                vectorize(mask, transform), pixel_size(transform)
+            ),
         ),
     }
 
