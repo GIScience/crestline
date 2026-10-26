@@ -7,6 +7,9 @@ authors:
 - family-names: "Kong"
   given-names: "Gefei"
   orcid: "https://orcid.org/0000-0002-4641-7456"
+- family-names: "Duarte"
+  given-names: "Jorge A."
+  orcid: "https://orcid.org/0000-0002-0463-4778"
 title: "Crestline - polygon centerlines by flooding"
 version: 0.1.0
 date-released: 2026-10-15
