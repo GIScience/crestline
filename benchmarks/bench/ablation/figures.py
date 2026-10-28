@@ -13,10 +13,10 @@ from bench.plotting import SECONDARY_INK_COLOR
 from bench.plotting import SURFACE_COLOR
 from bench.plotting import Canvas
 from bench.plotting import draw_chart_heading
+from bench.plotting import fixed_ticks
+from bench.plotting import log_ticks
 from bench.plotting import style_spines
 from matplotlib.axes import Axes
-from matplotlib.ticker import FixedLocator
-from matplotlib.ticker import NullLocator
 
 ABLATION_FIGURE_PATH = OUTPUT_DIR / 'ablation_benchmark.png'
 SOURCES = {'noisy mask': 'Noisy masks at 1 m', 'polygon': 'Polygons rasterized at 0.5 m'}
@@ -27,17 +27,23 @@ class Metric(NamedTuple):
     title: str
     hint: str
     log_scale: bool
-    scale: float
     value_format: str
 
 
 METRICS = [
-    Metric('f5', 'F1 @ 5 m', 'higher is better', False, 1, '{:.3f}'),
-    Metric('f2', 'F1 @ 2 m', 'higher is better', False, 1, '{:.3f}'),
-    Metric('offset', 'Offset', 'm, lower is better', False, 1, '{:.2f}'),
-    Metric('dead_end_error', 'Dead-end error', 'vs truth, lower is better', True, 1, '{:,.1f}'),
-    Metric('loop_error', 'Loop error', 'vs truth, lower is better', True, 1, '{:,.1f}'),
-    Metric('runtime_ms', 'Runtime', 'ms, lower is better', True, 1, '{:,.0f}'),
+    Metric('f5', 'F1 @ 5 m', 'higher is better', False, '{:.3f}'),
+    Metric('f2', 'F1 @ 2 m', 'higher is better', False, '{:.3f}'),
+    Metric('offset', 'Offset', 'm, lower is better', False, '{:.2f}'),
+    Metric('dead_end_error', 'Dead-end error', 'vs truth, lower is better', True, '{:,.1f}'),
+    Metric('loop_error', 'Loop error', 'vs truth, lower is better', True, '{:,.1f}'),
+    Metric('runtime_ms', 'Runtime', 'ms, lower is better', True, '{:,.0f}'),
+]
+
+LEGEND = [
+    ('baseline', ACCENT_COLOR, ACCENT_COLOR),
+    ('significantly worse', DEAD_END_COLOR, DEAD_END_COLOR),
+    ('significantly better', SURFACE_COLOR, INK_COLOR),
+    ('no significant change', NEUTRAL_COLOR, NEUTRAL_COLOR),
 ]
 
 
@@ -66,14 +72,8 @@ def _limits(values: np.ndarray, metric: Metric) -> tuple[float, float]:
     return 0.0, values.max() * 1.45
 
 
-def _log_ticks(low: float, high: float) -> list[float]:
-    ticks = [10.0**power for power in range(int(np.floor(np.log10(low))), int(np.ceil(np.log10(high))) + 1)]
-    ticks = [tick for tick in ticks if low <= tick <= high]
-    return ticks[::2] if len(ticks) > 4 else ticks
-
-
 def draw_metric(axes: Axes, rows: pd.DataFrame, metric: Metric, positions: np.ndarray) -> None:
-    values = rows['ablated'].to_numpy(float) * metric.scale
+    values = rows['ablated'].to_numpy(float)
     low, high = _limits(values, metric)
 
     axes.set_facecolor(SURFACE_COLOR)
@@ -85,16 +85,16 @@ def draw_metric(axes: Axes, rows: pd.DataFrame, metric: Metric, positions: np.nd
     for row_y in positions:
         axes.axhline(row_y, color=HAIRLINE_COLOR, lw=0.7, zorder=0)
 
-    full_value = rows.loc[rows['variant'] == 'baseline', 'ablated'].iloc[0] * metric.scale
+    full_value = rows.loc[rows['variant'] == 'baseline', 'ablated'].iloc[0]
     axes.axvline(max(full_value, low), color=ACCENT_COLOR, lw=0.8, alpha=0.35, zorder=1)
 
     for row_y, value, variant, verdict in zip(positions, values, rows['variant'], rows['verdict']):
         face, edge = _dot_color(variant, verdict)
         shown = max(value, low)
         axes.plot([shown], [row_y], 'o', ms=6.5, color=face, mec=edge, mew=1.2, zorder=3)
-        offset = shown * 1.25 if metric.log_scale else shown + (high - low) * 0.03
+        label_x = shown * 1.25 if metric.log_scale else shown + (high - low) * 0.03
         axes.text(
-            offset,
+            label_x,
             row_y,
             metric.value_format.format(value),
             va='center',
@@ -107,20 +107,11 @@ def draw_metric(axes: Axes, rows: pd.DataFrame, metric: Metric, positions: np.nd
     axes.set_yticks([])
     axes.tick_params(axis='x', length=0, labelsize=7.5, labelcolor=MUTED_COLOR, pad=4)
     if metric.log_scale:
-        ticks = _log_ticks(low, high)
-        axes.xaxis.set_major_locator(FixedLocator(ticks))
-        axes.xaxis.set_minor_locator(NullLocator())
-        axes.set_xticklabels([f'{tick:g}' for tick in ticks])
+        ticks = log_ticks(low, high)
+        ticks = ticks[::2] if len(ticks) > 4 else ticks
+        fixed_ticks(axes.xaxis, ticks, [f'{tick:g}' for tick in ticks])
 
     style_spines(axes)
-
-
-LEGEND = [
-    ('baseline', ACCENT_COLOR, ACCENT_COLOR),
-    ('significantly worse', DEAD_END_COLOR, DEAD_END_COLOR),
-    ('significantly better', SURFACE_COLOR, INK_COLOR),
-    ('no significant change', NEUTRAL_COLOR, NEUTRAL_COLOR),
-]
 
 
 def _draw_legend(canvas: Canvas, right: float, top: float) -> None:
@@ -132,9 +123,24 @@ def _draw_legend(canvas: Canvas, right: float, top: float) -> None:
         cursor -= 0.36
 
 
+def _draw_variant_labels(axes: Axes, positions: np.ndarray, variants: list[str]) -> None:
+    for row_y, variant in zip(positions, variants):
+        is_baseline = variant == 'baseline'
+        axes.text(
+            -0.06,
+            row_y,
+            variant,
+            transform=axes.get_yaxis_transform(),
+            ha='right',
+            va='center',
+            fontsize=8.5,
+            color=INK_COLOR if is_baseline else SECONDARY_INK_COLOR,
+            weight='semibold' if is_baseline else 'normal',
+        )
+
+
 def ablation_figure(table: pd.DataFrame) -> None:
-    variants = list(dict.fromkeys(table['variant']))
-    variants = ['baseline'] + [variant for variant in variants if variant != 'baseline']
+    variants = ['baseline', *[variant for variant in table['variant'].unique() if variant != 'baseline']]
     scenes = int(table['scenes'].max())
 
     left, right, label_width, gap = 0.35, 0.25, 2.25, 0.22
@@ -144,12 +150,7 @@ def ablation_figure(table: pd.DataFrame) -> None:
     chart_width = (canvas.width - left - right - label_width - gap * (len(METRICS) - 1)) / len(METRICS)
 
     canvas.text(
-        left,
-        0.48,
-        'Ablation: each stage of crestline switched off',
-        fontsize=14,
-        color=INK_COLOR,
-        weight='semibold',
+        left, 0.48, 'Ablation: each stage of crestline switched off', fontsize=14, color=INK_COLOR, weight='semibold'
     )
     canvas.text(
         left,
@@ -166,27 +167,15 @@ def ablation_figure(table: pd.DataFrame) -> None:
         canvas.text(left, top - 0.62, source_title, fontsize=11, color=INK_COLOR, weight='semibold')
 
         for metric_index, metric in enumerate(METRICS):
-            rows = table[(table['source'] == source) & (table['metric'] == metric.key)].set_index('variant')
-            rows = rows.reindex(variants).reset_index()
+            rows = table[(table['source'] == source) & (table['metric'] == metric.key)]
+            rows = rows.set_index('variant').reindex(variants).reset_index()
 
             chart_left = left + label_width + metric_index * (chart_width + gap)
             axes = canvas.axes(chart_left, top, chart_width, section_height)
-
             draw_metric(axes, rows, metric, positions)
             draw_chart_heading(canvas, chart_left, top, metric.title, metric.hint)
 
             if metric_index == 0:
-                for row_y, variant in zip(positions, variants):
-                    axes.text(
-                        -0.06,
-                        row_y,
-                        variant,
-                        transform=axes.get_yaxis_transform(),
-                        ha='right',
-                        va='center',
-                        fontsize=8.5,
-                        color=INK_COLOR if variant == 'baseline' else SECONDARY_INK_COLOR,
-                        weight='semibold' if variant == 'baseline' else 'normal',
-                    )
+                _draw_variant_labels(axes, positions, variants)
 
     canvas.save(ABLATION_FIGURE_PATH, 'ablation figure')

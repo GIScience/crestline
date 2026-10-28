@@ -70,9 +70,7 @@ def run(
     with tqdm(total=2 * len(method_registry) * len(radii), unit='run') as progress:
         for radius_km in radii:
             scene = _prepare_scene(network, center, radius_km, seed, noise)
-            scene_results = benchmark_scene(
-                scene, method_registry, repeat, progress, frozenset(retired), SINGLE_RUN_AFTER_S
-            )
+            scene_results = benchmark_scene(scene, method_registry, repeat, progress, retired, SINGLE_RUN_AFTER_S)
             retired |= _slow_runs(scene_results, radius_km, time_limit)
 
             results.extend(scene_results)
@@ -84,14 +82,8 @@ def run(
 
 
 def _square_window(center: Coordinate, offset: Coordinate, size: float) -> Window:
-    window_center_x, window_center_y = center[0] + offset[0], center[1] + offset[1]
-    half_window = size / 2
-    return (
-        window_center_x - half_window,
-        window_center_y - half_window,
-        window_center_x + half_window,
-        window_center_y + half_window,
-    )
+    center_x, center_y = center[0] + offset[0], center[1] + offset[1]
+    return center_x - size / 2, center_y - size / 2, center_x + size / 2, center_y + size / 2
 
 
 def main(
@@ -137,4 +129,4 @@ def main(
         summary = run(network, center, RADII_KM, method_registry, repeat, seed, noise, time_limit)
 
     logger.info(f'Benchmark finished in {time.perf_counter() - started:,.1f} s with {len(summary)} summary rows')
-    benchmark_figure(summary, method_registry, network, center, panel_radius, window, seed, noise, time_limit)
+    benchmark_figure(summary, network, center, panel_radius, window, seed, noise, time_limit)

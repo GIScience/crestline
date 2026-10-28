@@ -132,15 +132,11 @@ CASE_BUILDERS: dict[str, Callable[[int], Case]] = {
 }
 
 
-def make_case(case_kind: str, seed: int) -> Case:
+def make_scene(case_kind: str, seed: int) -> Scene:
     if case_kind not in CASE_BUILDERS:
         raise ValueError(f'Unknown case kind: {case_kind}')
 
-    return CASE_BUILDERS[case_kind](seed)
-
-
-def make_scene(case_kind: str, seed: int) -> Scene:
-    case = make_case(case_kind, seed)
+    case = CASE_BUILDERS[case_kind](seed)
     mask, transform = noisy_mask(case.polygon, seed)
     return Scene(
         fields={'case': case_kind, 'seed': seed},

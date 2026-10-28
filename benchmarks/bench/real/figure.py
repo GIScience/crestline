@@ -5,17 +5,14 @@ import numpy as np
 import pandas as pd
 from bench.environment import OUTPUT_DIR
 from bench.environment import logger
-from bench.methods import CUDA_METHOD
-from bench.methods import MethodRegistry
+from bench.methods import methods
 from bench.plotting import FIGURE_WIDTH
 from bench.plotting import LEFT_MARGIN
 from bench.plotting import RIGHT_MARGIN
 from bench.plotting import Canvas
 from bench.plotting import draw_chart_heading
-from bench.plotting import draw_header
-from bench.plotting import draw_panels
-from bench.plotting import map_window_title
-from bench.rasters import burn_polygon
+from bench.plotting import draw_map_panels
+from bench.rasters import burn
 from bench.real.charts import Trend
 from bench.real.charts import Trends
 from bench.real.charts import draw_trend
@@ -105,7 +102,6 @@ def draw_trend_charts(canvas: Canvas, summary: pd.DataFrame, method_names: list[
 
 def benchmark_figure(
     summary: pd.DataFrame,
-    method_registry: MethodRegistry,
     network: Network,
     center: Coordinate,
     panel_radius_km: int,
@@ -116,24 +112,22 @@ def benchmark_figure(
 ) -> None:
     logger.info(f'Drawing benchmark figure from the {panel_radius_km} km buffer')
 
-    method_names = [method_name for method_name in method_registry if method_name != CUDA_METHOD]
+    cpu_methods = methods()
     scene = make_scene(network, center, panel_radius_km, seed, noise)
     noisy_pieces = _count_pieces(scene.mask)
-    clean_pieces = _count_pieces(burn_polygon(scene.polygon, scene.mask, scene.transform))
+    clean_pieces = _count_pieces(burn(scene.polygon, scene.mask.shape, scene.transform))
 
     logger.info(f'Noise turns the {panel_radius_km} km buffer from {clean_pieces:,} into {noisy_pieces:,} pieces')
 
     canvas = Canvas(FIGURE_WIDTH, FIGURE_HEIGHT)
-
-    draw_header(
+    draw_map_panels(
         canvas,
-        map_window_title(window),
+        cpu_methods,
+        scene,
+        window,
         f'Scores in each title are for the whole {panel_radius_km} km buffer: {scene.true_dead_ends:,} true dead '
         f'ends, and the noisy mask has {noisy_pieces:,} pieces.',
-        LEFT_MARGIN,
-        RIGHT_MARGIN,
     )
-    draw_panels(canvas, method_names, method_registry, scene, window, LEFT_MARGIN, RIGHT_MARGIN)
-    draw_trend_charts(canvas, summary, method_names, time_limit)
+    draw_trend_charts(canvas, summary, list(cpu_methods), time_limit)
 
     canvas.save(FIGURE_PATH, 'benchmark figure')

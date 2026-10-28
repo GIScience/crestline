@@ -93,8 +93,8 @@ Crestline combines established ideas:
 What it adds is a skeletonization-free, linear-time pipeline that normalises inside the shape and works on both vectors
 and rasters.
 
-AI Assistance
+## AI Assistance
 
-Claude Opus 5.5 was used to handle refactoring in this project.
+Claude Opus 5.5 was used to handle refactoring and code improvement in this project.
 Its involvement is limited to the `benchmarks` and `tests` code.
 The rest of the codebase is 100% hand-crafted by humans, so any mistakes in it are fully organic (drop an issue if you spot one :)
