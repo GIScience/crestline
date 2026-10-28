@@ -59,11 +59,12 @@ def _grid(mask: np.ndarray):
 
 
 @jit(parallel=True, cache=True)
-def _flood(state: np.ndarray) -> np.ndarray:
+def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
     """
     Flood all target pixels from the sources, one ring per step.
 
     :param state: world state where: 0 = wall; 1 = source; 2 = target.
+    :param neighbourhood: 4 or 8 to flood with that neighbourhood only, 0 to alternate them (octagonal)
     :return: level array
     """
     h, w = state.shape
@@ -88,7 +89,7 @@ def _flood(state: np.ndarray) -> np.ndarray:
 
     while empty < 2:
         end = n
-        cross = step % 2 == 0
+        cross = neighbourhood == 4 or (neighbourhood != 8 and step % 2 == 0)
 
         for k in range(mid if cross else start, end):
             for o in ring[4 if k < mid else 0 : 4 if cross else 8]:
@@ -106,11 +107,12 @@ def _flood(state: np.ndarray) -> np.ndarray:
 
 
 @jit(parallel=True, cache=True)
-def _crests(depth: np.ndarray):
+def _crests(depth: np.ndarray, reach: int = 2):
     """
     Mark the crest of the inward flood steps.
 
     :param depth: inward flood steps (from the polygon perspective), padded by 2 px
+    :param reach: a crest pixel has nothing deeper within this many pixels, at most 2
     :return: grid with walls and sources marked
     """
     h, w = depth.shape
@@ -122,8 +124,8 @@ def _crests(depth: np.ndarray):
 
             if d:
                 top = True
-                for di in range(-2, 3):
-                    for dj in range(-2, 3):
+                for di in range(-reach, reach + 1):
+                    for dj in range(-reach, reach + 1):
                         top &= depth[di + i, dj + j] <= d
 
                 state[i, j] = 1 if top else 2
@@ -251,6 +253,19 @@ def _dist(points: np.ndarray, i: int, j: int, eps: float = 1e-12):
     return math.hypot(float(points[i, 0] - points[j, 0]), float(points[i, 1] - points[j, 1])) + eps * (i + j)
 
 
+def _links(points: np.ndarray, heights: np.ndarray, near: np.ndarray) -> np.ndarray:
+    """
+    Keep the candidate links no longer than twice the depth of their deeper end.
+
+    :param points: (n, 2) row, col of the thinned crest points
+    :param heights: inward flood depth at each point
+    :param near: (m, 2) candidate links
+    :return: the links short enough for their depth
+    """
+    span = np.hypot(*(points[near[:, 0]] - points[near[:, 1]]).T)
+    return near[span <= 2 * np.maximum(heights[near[:, 0]], heights[near[:, 1]])]
+
+
 @jit(parallel=True, cache=True)
 def _on_ridge(points: np.ndarray, pairs: np.ndarray, depth: np.ndarray, dip: float, samples: int):
     """
@@ -286,15 +301,18 @@ def _on_ridge(points: np.ndarray, pairs: np.ndarray, depth: np.ndarray, dip: flo
 
 
 @jit(cache=True)
-def _prune(points: np.ndarray, pairs: np.ndarray):
+def _prune(points: np.ndarray, pairs: np.ndarray, cycle: int = 4):
     """
     Drop shortcut links.
 
     :param points: (n, 2) row, col of the thinned crest points
     :param pairs: (m, 2) links that passed the ridge test
+    :param cycle: drop the longest link of every cycle of up to this many links: 4, 3 (triangles only) or 0 (off)
     :return: bool array, True for links to keep
     """
     n, m = len(points), len(pairs)
+    if cycle < 3:
+        return np.ones(m, np.bool_)
 
     degree = np.zeros(n + 1, np.int64)
     for e in range(m):
@@ -328,6 +346,8 @@ def _prune(points: np.ndarray, pairs: np.ndarray):
                 if q == j:
                     keep[e] = False
                     break
+                if cycle < 4:
+                    continue
 
                 for c in range(start[j], start[j + 1]):
                     if nbr[c] == q and _dist(points, q, j) < d_ij:
@@ -679,8 +699,7 @@ def crestline(
     points, heights = np.c_[rows[keep], cols[keep]], height[keep]
 
     near = cKDTree(points).query_pairs(max(2, spur) * heights.max(), output_type='ndarray')
-    span = np.hypot(*(points[near[:, 0]] - points[near[:, 1]]).T)
-    pairs = near[span <= 2 * np.maximum(heights[near[:, 0]], heights[near[:, 1]])]
+    pairs = _links(points, heights, near)
     pairs = pairs[_on_ridge(points, pairs, depth, dip, 2 * heights.max() + 2)]
     pairs = pairs[_prune(points, pairs)]
 

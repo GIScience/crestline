@@ -69,9 +69,22 @@ The summary table is rewritten after every buffer, so `--plot_only` can redraw t
 largest buffers need plenty of memory: the noise and the skeleton baseline each hold several full-size distance
 transforms.
 
+## Ablation
+
+![](benchmarks/output/ablation_benchmark.png)
+
+### Reproduce
+
+```bash
+uv sync --extra benchmark
+uv run python benchmarks/ablation_benchmark.py
+```
+
 ## Limitations
 
-TBD
+Disjoint parts of a shape are processed independently with no bridging of the gaps between them.
+Each resulting line ends about one local half-width before the gap, so occlusions and segmentation dropouts that cut a branch leave the network with breaks unless post-processing joins the dead ends.
+Occluders that only make a hole into a branch are handled by opening the loop around them.
 
 ## Background
 

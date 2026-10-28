@@ -107,9 +107,28 @@ def draw_header(
 
     legend_right = canvas.width - right_margin
     canvas.text(legend_right, 0.78, 'centerline', fontsize=9, ha='right')
-    canvas.mark([legend_right - 0.95, legend_right - 0.72], 0.745, color=ACCENT_COLOR, lw=2)
-    canvas.text(legend_right - 1.12, 0.78, 'dead end', fontsize=9, ha='right')
-    canvas.mark([legend_right - 1.82], 0.745, marker='o', ms=6.5, color=DEAD_END_COLOR, mec=SURFACE_COLOR, mew=1.2)
+    canvas.mark(
+        [legend_right - 0.95, legend_right - 0.72],
+        0.745,
+        color=ACCENT_COLOR,
+        lw=2,
+    )
+    canvas.text(
+        legend_right - 1.12,
+        0.78,
+        'dead end',
+        fontsize=9,
+        ha='right',
+    )
+    canvas.mark(
+        [legend_right - 1.82],
+        0.745,
+        marker='o',
+        ms=6.5,
+        color=DEAD_END_COLOR,
+        mec=SURFACE_COLOR,
+        mew=1.2,
+    )
 
 
 def _window_crop(scene: Scene, window: Window) -> NDArray[np.bool_]:
