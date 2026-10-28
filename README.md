@@ -65,10 +65,6 @@ uv sync --extra benchmark
 uv run python benchmarks/real_benchmark.py
 ```
 
-The summary table is rewritten after every buffer, so `--plot_only` can redraw the figure from a partial run. The
-largest buffers need plenty of memory: the noise and the skeleton baseline each hold several full-size distance
-transforms.
-
 ## Ablation
 
 ![](benchmarks/output/ablation_benchmark.png)
@@ -96,3 +92,9 @@ Crestline combines established ideas:
 
 What it adds is a skeletonization-free, linear-time pipeline that normalises inside the shape and works on both vectors
 and rasters.
+
+AI Assistance
+
+Claude Opus 5.5 was used to handle refactoring in this project.
+Its involvement is limited to the `benchmarks` and `tests` code.
+The rest of the codebase is 100% hand-crafted by humans, so any mistakes in it are fully organic (drop an issue if you spot one :)
