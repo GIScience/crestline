@@ -3,6 +3,7 @@ from builtins import float
 
 import numpy as np
 import shapely
+from affine import Affine
 from numba import jit
 from numba import prange
 from pyproj import CRS
@@ -14,7 +15,7 @@ from shapely import MultiLineString
 from shapely import Polygon
 from shapely import linestrings
 from shapely import multilinestrings
-from shapely import transform
+from shapely import transform as tx
 from shapely.geometry.multipolygon import MultiPolygon
 
 
@@ -36,7 +37,7 @@ def _project(polygon: Polygon | MultiPolygon, crs: int | None) -> tuple[Polygon 
 
 def _reproject_crs(geom: shapely.Geometry, src_crs: CRS, dst_crs: CRS) -> shapely.Geometry:
     transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-    return transform(geom, transformer.transform, interleaved=False)
+    return tx(geom, transformer.transform, interleaved=False)
 
 
 @jit(parallel=True, cache=True)
@@ -343,6 +344,152 @@ def _prune(points: np.ndarray, pairs: np.ndarray):
 
 
 @jit(cache=True)
+def _faces(points: np.ndarray, pairs: np.ndarray):
+    """
+    Trace the faces of the planar link graph.
+
+    :param points: (n, 2) row, col of the thinned crest points
+    :param pairs: (m, 2) links
+    :return: face of every half link (2e runs pairs[e, 0] -> pairs[e, 1], 2e + 1 back), the half link after it on
+        its face, and the signed area of every face (> 0 inside a loop)
+    """
+    n, m = len(points), len(pairs)
+
+    count = np.zeros(n + 1, np.int64)
+    for e in range(m):
+        count[pairs[e, 0] + 1] += 1
+        count[pairs[e, 1] + 1] += 1
+
+    start = np.cumsum(count)
+    half, angle = np.empty(2 * m, np.int64), np.empty(2 * m, np.float64)
+    fill = start[:-1].copy()
+    for h in range(2 * m):
+        i, j = pairs[h // 2, h % 2], pairs[h // 2, 1 - h % 2]
+        a, k = math.atan2(points[j, 0] - points[i, 0], points[j, 1] - points[i, 1]), fill[i]
+        while k > start[i] and angle[k - 1] > a:
+            half[k], angle[k] = half[k - 1], angle[k - 1]
+            k -= 1
+        half[k], angle[k] = h, a
+        fill[i] += 1
+
+    slot = np.empty(2 * m, np.int64)
+    for k in range(2 * m):
+        slot[half[k]] = k
+
+    face, after = np.full(2 * m, -1, np.int64), np.empty(2 * m, np.int64)
+    area = np.zeros(2 * m + 1, np.float64)
+    f = 0
+    for h0 in range(2 * m):
+        if face[h0] >= 0:
+            continue
+
+        h = h0
+        while face[h] < 0:
+            i, j = pairs[h // 2, h % 2], pairs[h // 2, 1 - h % 2]
+            face[h] = f
+            area[f] += 0.5 * (points[i, 0] * points[j, 1] - points[j, 0] * points[i, 1])
+            k = slot[h ^ 1] + 1
+            after[h] = half[k if k < start[j + 1] else start[j]]
+            h = after[h]
+        f += 1
+
+    return face, after, area[:f]
+
+
+@jit(cache=True)
+def _occluded(
+    points: np.ndarray,
+    pairs: np.ndarray,
+    heights: np.ndarray,
+    mask: np.ndarray,
+    hole: float,
+    loop: float = 2 / 3,
+):
+    """
+    Open the loops around holes too small for the depth around them: an occluder, not a block.
+
+    :param points: row, col of the thinned crest points
+    :param pairs: links that survived _despur
+    :param heights: inward flood depth at each point
+    :param mask: 2D bool mask (True inside)
+    :param hole: a loop stays if the background inside it covers (hole * its deepest point)^2 pixels...
+    :param loop: ...or if it outgrows the disc of loop * its deepest point
+    :return: bool array, True for links to keep; the path holding the shallowest link goes, from junction to junction
+    """
+    n, m = len(points), len(pairs)
+    keep = np.ones(m, np.bool_)
+
+    cut = True
+    while cut:
+        cut = False
+        alive = np.flatnonzero(keep)
+        face, after, area = _faces(points, pairs[alive])
+
+        before, first, degree = np.empty_like(after), np.full(len(area), -1, np.int64), np.zeros(n, np.int64)
+        ring = np.empty((len(after), 2), np.int64)
+        for h in range(len(after)):
+            before[after[h]] = h
+            first[face[h]] = h if first[face[h]] < 0 else first[face[h]]
+            degree[pairs[alive[h // 2], h % 2]] += 1
+
+        for f in range(len(area)):
+            if area[f] <= 0:
+                continue
+
+            size, deep, weak, link, intact, h = 0, 0, np.inf, -1, True, first[f]
+            while size == 0 or h != first[f]:
+                e = alive[h // 2]
+                i, j = pairs[e, h % 2], pairs[e, 1 - h % 2]
+                ring[size, 0], ring[size, 1], size = i, j, size + 1
+                deep, intact = max(deep, heights[i]), intact and keep[e]
+                if face[h ^ 1] != f and min(heights[i], heights[j]) < weak:
+                    weak, link = min(heights[i], heights[j]), h
+                h = after[h]
+
+            if not intact or link < 0 or area[f] > np.pi * (loop * deep) ** 2:
+                continue
+
+            found, need, xs = 0, (hole * deep) ** 2, np.empty(size, np.float64)
+            for r in range(points[ring[:size, 0], 0].min(), points[ring[:size, 0], 0].max() + 1):
+                c = 0
+                for k in range(size):
+                    (r0, c0), (r1, c1) = points[ring[k, 0]], points[ring[k, 1]]
+                    if (r0 > r) != (r1 > r):
+                        xs[c], c = c0 + (r - r0) * (c1 - c0) / (r1 - r0), c + 1
+
+                cross = np.sort(xs[:c])
+                for a in range(0, c - 1, 2):
+                    found += np.sum(~mask[r, int(np.ceil(cross[a])) : int(np.floor(cross[a + 1])) + 1])
+
+                if found >= need:
+                    break
+
+            if found >= need:
+                continue
+
+            head, tail = link, link
+            while degree[pairs[alive[head // 2], 1 - head % 2]] == 2 and after[head] != tail:
+                head = after[head]
+            while degree[pairs[alive[tail // 2], tail % 2]] == 2 and before[tail] != head:
+                tail = before[tail]
+
+            if pairs[alive[head // 2], 1 - head % 2] == pairs[alive[tail // 2], tail % 2]:
+                continue
+
+            h, cut = tail, True
+            while True:
+                e = alive[h // 2]
+                keep[e] = False
+                degree[pairs[e, 0]] -= 1
+                degree[pairs[e, 1]] -= 1
+                if h == head:
+                    break
+                h = after[h]
+
+    return keep
+
+
+@jit(cache=True)
 def _despur(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, near: np.ndarray, spur: float, tip: float):
     """
     Remove spurs leaf by leaf.
@@ -403,27 +550,92 @@ def _despur(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, near: np
     return alive
 
 
+@jit(cache=True)
+def _tips(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, crest: np.ndarray, depth: np.ndarray, tip: float):
+    """
+    Move every dead end to the far end of the crest it was thinned from.
+
+    :param points: row, col of the thinned crest points, moved in place
+    :param pairs: final links
+    :param heights: inward flood depth at each point, updated in place
+    :param crest: crest raster, padded by 2 px
+    :param depth: inward flood steps, unpadded
+    :param tip: the new end must stay deeper than tip * the old one
+    """
+    n, (h, w) = len(points), depth.shape
+    degree, other = np.zeros(n, np.int64), np.zeros(n, np.int64)
+    for e in range(len(pairs)):
+        i, j = pairs[e, 0], pairs[e, 1]
+        degree[i], degree[j], other[i], other[j] = degree[i] + 1, degree[j] + 1, j, i
+
+    for v in range(n):
+        if degree[v] != 1:
+            continue
+
+        r, c = points[v, 0], points[v, 1]
+        dr, dc = r - points[other[v], 0], c - points[other[v], 1]
+        radius = max(0.35 * heights[v], 3.0)
+        reach, best, end = int(radius), 0, (r, c)
+
+        for i in range(max(r - reach, 0), min(r + reach + 1, h)):
+            for j in range(max(c - reach, 0), min(c + reach + 1, w)):
+                ahead = (i - r) * dr + (j - c) * dc
+                inside = (i - r) ** 2 + (j - c) ** 2 <= radius * radius
+                if inside and ahead > best and crest[i + 2, j + 2] and depth[i, j] >= tip * heights[v]:
+                    best, end = ahead, (i, j)
+
+        points[v, 0], points[v, 1] = end
+        heights[v] = depth[end]
+
+
+@jit(parallel=True, cache=True)
+def _center(points: np.ndarray, heights: np.ndarray, crest: np.ndarray, depth: np.ndarray):
+    """
+    Center every point on the crest pixels of its own depth within a radius of sqrt(5) px.
+
+    :param points: row, col of the thinned crest points
+    :param heights: inward flood depth at each point
+    :param crest: crest raster, padded by 2 px
+    :param depth: inward flood steps, unpadded
+    :return: (n, 2) row, col
+    """
+    rc = np.empty((len(points), 2), np.float64)
+    for k in prange(len(points)):
+        r, c, dr, dc, same = points[k, 0], points[k, 1], 0, 0, 0
+        for i in range(-2, 3):
+            for j in range(-2, 3):
+                if i * i + j * j <= 5 and crest[r + i + 2, c + j + 2] and depth[r + i, c + j] == heights[k]:
+                    dr, dc, same = dr + i, dc + j, same + 1
+
+        rc[k, 0], rc[k, 1] = r + 0.5 + dr / same, c + 0.5 + dc / same
+
+    return rc
+
+
 def crestline(
     source,
     epsg_crs: int | None = None,
     resolution: float | None = None,
-    transform=None,
+    transform: Affine | None = None,
     simplify: float = 0.0,
     dip: float = 0.65,
     spur: float = 2.0,
     tip: float = 0.75,
+    hole: float = 0.25,
     device: str = 'cpu',
 ) -> MultiLineString:
     """
     Trace the centerline of a polygon or a polygon mask.
 
     :param source: shapely Polygon / MultiPolygon, or a 2D bool mask (True inside)
+    :param epsg_crs: coordinate reference system (int code)
     :param resolution: pixel size in map units; required for a polygon, ignored for a mask
     :param transform: affine pixel -> map for a mask input (e.g. rasterio's); None keeps pixel coords
     :param simplify: Douglas-Peucker tolerance in output units, 0 = off
     :param dip: keep a link only if the flood depth along it stays above dip * its lower end
     :param spur: prune dead ends whose disc fits inside spur * the disc of a deeper crest point, 0 = off
     :param tip: ...but only if they are shallower than tip * its depth (real road ends stay deep)
+    :param hole: open loops around holes narrower than hole * the surrounding depth (occluders), 0 = off
     :param device: 'cpu', or 'cuda' to flood and find the crest on an NVIDIA GPU (needs numba-cuda); same result
     :return: centerline, empty if there is none
     """
@@ -475,16 +687,14 @@ def crestline(
     if spur > 0:
         pairs = pairs[_despur(points, pairs, heights, near, spur, tip)]
 
+    if hole > 0:
+        pairs = pairs[_occluded(points, pairs, heights, mask, hole)]
+
     if len(pairs) == 0:
         return MultiLineString()
 
-    shift, same = np.zeros(points.shape), np.zeros(len(points))
-    for d in np.argwhere(np.ones((3, 3))) - 1:
-        r, c = (points + d).T
-        hit = crest[r + 2, c + 2] & (depth[r, c] == heights)
-        shift, same = shift + hit[:, None] * d, same + hit
-
-    rc = points + 0.5 + shift / same[:, None]
+    _tips(points, pairs, heights, crest, depth, tip)
+    rc = _center(points, heights, crest, depth)
 
     xy = np.c_[rc[:, 1], rc[:, 0]]
     if grid is not None:
