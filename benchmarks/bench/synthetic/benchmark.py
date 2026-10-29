@@ -1,6 +1,7 @@
 import time
 from typing import TypeAlias
 
+import pandas as pd
 from bench.environment import OUTPUT_DIR
 from bench.environment import configure_logging
 from bench.environment import detect_cuda
@@ -61,15 +62,9 @@ def main(
     :param log_level: Level for the benchmark's own log messages, such as DEBUG, INFO or WARNING
     """
     configure_logging(log_level)
-
-    if cases is None:
-        cases = list(DEFAULT_CASES)
-
-    if seeds is None:
-        seeds = list(DEFAULT_SEEDS)
-
-    if large_seeds is None:
-        large_seeds = list(DEFAULT_LARGE_SEEDS)
+    cases = list(DEFAULT_CASES if cases is None else cases)
+    seeds = list(DEFAULT_SEEDS if seeds is None else seeds)
+    large_seeds = list(DEFAULT_LARGE_SEEDS if large_seeds is None else large_seeds)
 
     gpu_name = detect_cuda()
     method_registry = methods(bool(gpu_name))
@@ -85,8 +80,9 @@ def main(
     logger.info(f'Benchmark finished in {time.perf_counter() - started:.1f} s with {len(results)} results')
     write_table(results, ['case', 'source', 'method'], TABLE_PATH)
 
+    runs = pd.DataFrame(results)
     if 'roads' in cases:
-        benchmark_figure(results, method_registry)
+        benchmark_figure(runs)
 
     if gpu_name:
-        cuda_benchmark_figure(results, gpu_name)
+        cuda_benchmark_figure(runs, gpu_name)

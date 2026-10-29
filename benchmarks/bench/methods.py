@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Any
 from typing import NamedTuple
 from typing import TypeAlias
 
@@ -21,12 +22,11 @@ from crestline import crestline
 CUDA_METHOD = 'crestline (CUDA)'
 POLYGON_RESOLUTION_M = 0.5
 
-Extractor: TypeAlias = Callable[[Shape, NDArray[np.bool_], Affine], Geometry]
-
 
 class Method(NamedTuple):
-    on_polygon: Extractor
-    on_mask: Extractor
+    on_polygon: Callable[[Shape], Geometry]
+    on_mask: Callable[[NDArray[np.bool_], Affine], Geometry]
+    single_run: bool = False
 
 
 MethodRegistry: TypeAlias = dict[str, Method]
@@ -43,45 +43,32 @@ def voronoi_centerline(geometry: Shape, interpolation_distance: float) -> Geomet
         return MultiLineString()
 
 
-def polygon_skeleton(polygon: Shape) -> Geometry:
-    mask, transform = rasterize_polygon(polygon, POLYGON_RESOLUTION_M)
-    return skeleton(mask, transform)
-
-
-def pixel_size(transform: Affine) -> float:
-    return abs(transform.a)
+def _crestline_method(**options: Any) -> Method:
+    return Method(
+        on_polygon=lambda polygon: crestline(polygon, resolution=POLYGON_RESOLUTION_M, **options),
+        on_mask=lambda mask, transform: crestline(mask, transform=transform, **options),
+    )
 
 
 def methods(with_cuda: bool = False) -> MethodRegistry:
     registry: MethodRegistry = {
-        'crestline': Method(
-            on_polygon=lambda polygon, mask, transform: crestline(polygon, resolution=POLYGON_RESOLUTION_M),
-            on_mask=lambda polygon, mask, transform: crestline(mask, transform=transform),
-        ),
+        'crestline': _crestline_method(),
         'pygeoops.centerline': Method(
-            on_polygon=lambda polygon, mask, transform: pygeoops_centerline(
-                polygon, densify_distance=POLYGON_RESOLUTION_M
-            ),
-            on_mask=lambda polygon, mask, transform: pygeoops_centerline(vectorize(mask, transform)),
+            on_polygon=lambda polygon: pygeoops_centerline(polygon, densify_distance=POLYGON_RESOLUTION_M),
+            on_mask=lambda mask, transform: pygeoops_centerline(vectorize(mask, transform)),
         ),
         'skeletonize + prune': Method(
-            on_polygon=lambda polygon, mask, transform: polygon_skeleton(polygon),
-            on_mask=lambda polygon, mask, transform: skeleton(mask, transform),
+            on_polygon=lambda polygon: skeleton(*rasterize_polygon(polygon, POLYGON_RESOLUTION_M)),
+            on_mask=skeleton,
         ),
         'centerline (Voronoi)': Method(
-            on_polygon=lambda polygon, mask, transform: voronoi_centerline(polygon, POLYGON_RESOLUTION_M),
-            on_mask=lambda polygon, mask, transform: voronoi_centerline(
-                vectorize(mask, transform), pixel_size(transform)
-            ),
+            on_polygon=lambda polygon: voronoi_centerline(polygon, POLYGON_RESOLUTION_M),
+            on_mask=lambda mask, transform: voronoi_centerline(vectorize(mask, transform), abs(transform.a)),
+            single_run=True,
         ),
     }
 
     if with_cuda:
-        registry[CUDA_METHOD] = Method(
-            on_polygon=lambda polygon, mask, transform: crestline(
-                polygon, resolution=POLYGON_RESOLUTION_M, device='cuda'
-            ),
-            on_mask=lambda polygon, mask, transform: crestline(mask, transform=transform, device='cuda'),
-        )
+        registry[CUDA_METHOD] = _crestline_method(device='cuda')
 
     return registry

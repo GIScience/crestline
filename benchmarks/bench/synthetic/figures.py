@@ -2,10 +2,11 @@ import os
 from typing import NamedTuple
 
 import numpy as np
+import pandas as pd
 from bench.environment import OUTPUT_DIR
 from bench.environment import logger
 from bench.methods import CUDA_METHOD
-from bench.methods import MethodRegistry
+from bench.methods import methods
 from bench.plotting import ACCENT_COLOR
 from bench.plotting import AXIS_COLOR
 from bench.plotting import FIGURE_WIDTH
@@ -19,16 +20,14 @@ from bench.plotting import SECONDARY_INK_COLOR
 from bench.plotting import SURFACE_COLOR
 from bench.plotting import Canvas
 from bench.plotting import draw_chart_heading
-from bench.plotting import draw_header
-from bench.plotting import draw_panels
-from bench.plotting import map_window_title
+from bench.plotting import draw_map_panels
+from bench.plotting import fixed_ticks
+from bench.plotting import log_ticks
 from bench.plotting import style_spines
-from bench.runner import Result
 from bench.scene import Window
 from bench.synthetic.cases import make_scene
 from matplotlib.axes import Axes
 from matplotlib.ticker import FixedLocator
-from matplotlib.ticker import NullLocator
 from numpy.typing import NDArray
 
 BENCHMARK_FIGURE_PATH = OUTPUT_DIR / 'synthetic_benchmark.png'
@@ -36,7 +35,6 @@ CUDA_FIGURE_PATH = OUTPUT_DIR / 'synthetic_benchmark_cuda.png'
 BENCHMARK_FIGURE_HEIGHT = 7.5
 PANEL_WINDOW: Window = (470, 270, 870, 670)
 SUMMARY_CASES = ('roads', 'mixed', 'river')
-DECADES = (1, 10, 100, 1000, 10000)
 CASE_LABELS: dict[str, str] = {
     'river': 'rivers',
     'roads': 'road networks',
@@ -52,24 +50,6 @@ class DotChart(NamedTuple):
     log_scale: bool
     value_format: str
     truth: float | None = None
-
-
-def _decade_ticks(low: float, high: float) -> list[int]:
-    return [tick for tick in DECADES if low <= tick <= high]
-
-
-def _method_mean(subset: list[Result], key: str, method_name: str) -> float:
-    return np.mean([result[key] for result in subset if result['method'] == method_name])
-
-
-def _mean_runtime_ms(results: list[Result], case_kind: str, source: str, method_name: str) -> float:
-    return 1000 * np.mean(
-        [
-            result['time']
-            for result in results
-            if (result['case'], result['source'], result['method']) == (case_kind, source, method_name)
-        ]
-    )
 
 
 def _speed_label(cpu_runtime_ms: float, gpu_runtime_ms: float) -> str:
@@ -96,36 +76,27 @@ def _draw_row_labels(axes: Axes, row_positions: NDArray[np.int64], labels: list[
         )
 
 
-def _summary_charts(results: list[Result], method_names: list[str]) -> list[DotChart]:
-    noisy_results = [
-        result for result in results if result['source'] == 'noisy mask' and result['case'] in SUMMARY_CASES
-    ]
-    timed_results = [result for result in results if result['source'] == 'noisy mask' and result['case'] == 'roads']
-    mean_true_dead_ends = _method_mean(noisy_results, 'true_dead', method_names[0])
+def _noisy_means(runs: pd.DataFrame, cases: tuple[str, ...], method_names: list[str]) -> pd.DataFrame:
+    noisy = runs[(runs['source'] == 'noisy mask') & runs['case'].isin(cases)]
+    return noisy.groupby('method')[['f5', 'dead', 'true_dead', 'time']].mean().loc[method_names]
+
+
+def _summary_charts(runs: pd.DataFrame, method_names: list[str]) -> list[DotChart]:
+    means = _noisy_means(runs, SUMMARY_CASES, method_names)
+    road_means = _noisy_means(runs, ('roads',), method_names)
+    true_dead_ends = means['true_dead'].iloc[0]
 
     return [
-        DotChart(
-            'F1 @ 5 m',
-            'higher is better',
-            [_method_mean(noisy_results, 'f5', method_name) for method_name in method_names],
-            False,
-            '{:.3f}',
-        ),
+        DotChart('F1 @ 5 m', 'higher is better', means['f5'].tolist(), False, '{:.3f}'),
         DotChart(
             'Dead ends',
-            f'closer to the true {mean_true_dead_ends:.1f} is better',
-            [_method_mean(noisy_results, 'dead', method_name) for method_name in method_names],
+            f'closer to the true {true_dead_ends:.1f} is better',
+            means['dead'].tolist(),
             True,
             '{:,.0f}',
-            mean_true_dead_ends,
+            true_dead_ends,
         ),
-        DotChart(
-            'Runtime, 1.2 Mpx mask',
-            'lower is better',
-            [1000 * _method_mean(timed_results, 'time', method_name) for method_name in method_names],
-            True,
-            '{:,.0f} ms',
-        ),
+        DotChart('Runtime, 1.2 Mpx mask', 'lower is better', (1000 * road_means['time']).tolist(), True, '{:,.0f} ms'),
     ]
 
 
@@ -145,6 +116,7 @@ def _draw_dot_chart(axes: Axes, chart: DotChart, method_names: list[str], row_po
 
     for row_y, value, method_name in zip(row_positions, chart.values, method_names):
         is_crestline = method_name == 'crestline'
+        is_below_truth = chart.truth is not None and value < chart.truth
         axes.plot(
             [value],
             [row_y],
@@ -156,10 +128,13 @@ def _draw_dot_chart(axes: Axes, chart: DotChart, method_names: list[str], row_po
             zorder=3,
         )
 
-        is_below_truth = chart.truth is not None and value < chart.truth
-        label_offset = (1 / 1.2 if is_below_truth else 1.2) if chart.log_scale else 0.02
+        if chart.log_scale:
+            label_x = value / 1.2 if is_below_truth else value * 1.2
+        else:
+            label_x = value + 0.02
+
         axes.text(
-            value * label_offset if chart.log_scale else value + label_offset,
+            label_x,
             row_y,
             chart.value_format.format(value),
             va='center',
@@ -172,10 +147,8 @@ def _draw_dot_chart(axes: Axes, chart: DotChart, method_names: list[str], row_po
     axes.set_yticks([])
     axes.tick_params(axis='x', length=0, labelsize=8.5, labelcolor=MUTED_COLOR, pad=5)
     if chart.log_scale:
-        tick_values = _decade_ticks(x_min, x_max)
-        axes.xaxis.set_major_locator(FixedLocator(tick_values))
-        axes.xaxis.set_minor_locator(NullLocator())
-        axes.set_xticklabels([f'{tick:,}' for tick in tick_values])
+        ticks = log_ticks(x_min, x_max)
+        fixed_ticks(axes.xaxis, ticks, [f'{tick:,g}' for tick in ticks])
     else:
         axes.xaxis.set_major_locator(FixedLocator([0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]))
 
@@ -183,26 +156,25 @@ def _draw_dot_chart(axes: Axes, chart: DotChart, method_names: list[str], row_po
 
 
 def benchmark_figure(
-    results: list[Result],
-    method_registry: MethodRegistry,
+    runs: pd.DataFrame,
     case_kind: str = 'roads',
     seed: int = 1,
     window: Window = PANEL_WINDOW,
 ) -> None:
     logger.info(f'Drawing benchmark figure from {case_kind} seed {seed}')
 
-    method_names = [method_name for method_name in method_registry if method_name != CUDA_METHOD]
+    cpu_methods = methods()
+    method_names = list(cpu_methods)
     scene = make_scene(case_kind, seed)
 
     canvas = Canvas(FIGURE_WIDTH, BENCHMARK_FIGURE_HEIGHT)
-    draw_header(
+    draw_map_panels(
         canvas,
-        map_window_title(window),
+        cpu_methods,
+        scene,
+        window,
         f'Scores in each title are for the whole network; it has {scene.true_dead_ends} true dead ends.',
-        LEFT_MARGIN,
-        RIGHT_MARGIN,
     )
-    draw_panels(canvas, method_names, method_registry, scene, window, LEFT_MARGIN, RIGHT_MARGIN)
 
     charts_top, label_column_width, chart_gap, chart_height = 5.45, 1.45, 0.4, 1.6
     chart_width = (canvas.width - LEFT_MARGIN - label_column_width - RIGHT_MARGIN - 2 * chart_gap) / 3
@@ -214,7 +186,7 @@ def benchmark_figure(
     )
 
     row_positions = np.arange(len(method_names))[::-1]
-    for chart_index, chart in enumerate(_summary_charts(results, method_names)):
+    for chart_index, chart in enumerate(_summary_charts(runs, method_names)):
         chart_left = LEFT_MARGIN + label_column_width + chart_index * (chart_width + chart_gap)
         chart_axes = canvas.axes(chart_left, charts_top, chart_width, chart_height)
         _draw_dot_chart(chart_axes, chart, method_names, row_positions)
@@ -278,36 +250,29 @@ def _draw_runtime_chart(
         )
 
     axes.set_yticks([])
-    tick_values = _decade_ticks(x_min, x_max)
-    axes.xaxis.set_major_locator(FixedLocator(tick_values))
-    axes.xaxis.set_minor_locator(NullLocator())
-    axes.set_xticklabels([f'{tick:,} ms' for tick in tick_values])
+    ticks = log_ticks(x_min, x_max)
+    fixed_ticks(axes.xaxis, ticks, [f'{tick:,g} ms' for tick in ticks])
     axes.tick_params(axis='x', length=0, labelsize=8.5, labelcolor=MUTED_COLOR, pad=5)
     style_spines(axes)
 
 
-def cuda_benchmark_figure(results: list[Result], gpu_name: str) -> None:
-    cuda_cases = {result['case'] for result in results if result['method'] == CUDA_METHOD}
-    mean_mpx = {
-        case_kind: np.mean([result['mpx'] for result in results if result['case'] == case_kind])
-        for case_kind in cuda_cases
-    }
-    ordered_cases = sorted(mean_mpx, key=mean_mpx.get)
-    cuda_matches = [result['same'] for result in results if result['method'] == CUDA_METHOD]
+def cuda_benchmark_figure(runs: pd.DataFrame, gpu_name: str) -> None:
+    cuda_runs = runs[runs['method'] == CUDA_METHOD]
+    mean_mpx = cuda_runs.groupby('case')['mpx'].mean().sort_values()
+    runtime_ms = 1000 * runs.groupby(['case', 'source', 'method'])['time'].mean()
+    cases = mean_mpx.index.tolist()
 
     label_column_width, chart_gap, charts_top = 2.1, 0.5, 1.5
-    chart_height = 0.42 * len(ordered_cases)
+    chart_height = 0.42 * len(cases)
     chart_width = (FIGURE_WIDTH - LEFT_MARGIN - label_column_width - RIGHT_MARGIN - chart_gap) / 2
     canvas = Canvas(FIGURE_WIDTH, 2.0 + chart_height)
-    _draw_cuda_header(canvas, gpu_name, cuda_matches)
+    _draw_cuda_header(canvas, gpu_name, cuda_runs['same'].tolist())
 
-    row_positions = np.arange(len(ordered_cases))[::-1]
-    row_labels = [
-        f'{CASE_LABELS.get(case_kind, case_kind)} ({mean_mpx[case_kind]:.1f} Mpx)' for case_kind in ordered_cases
-    ]
+    row_positions = np.arange(len(cases))[::-1]
+    row_labels = [f'{CASE_LABELS.get(case_kind, case_kind)} ({mpx:.1f} Mpx)' for case_kind, mpx in mean_mpx.items()]
     for chart_index, source in enumerate(('polygon', 'noisy mask')):
-        cpu_runtimes = [_mean_runtime_ms(results, case_kind, source, 'crestline') for case_kind in ordered_cases]
-        gpu_runtimes = [_mean_runtime_ms(results, case_kind, source, CUDA_METHOD) for case_kind in ordered_cases]
+        cpu_runtimes = [runtime_ms[case_kind, source, 'crestline'] for case_kind in cases]
+        gpu_runtimes = [runtime_ms[case_kind, source, CUDA_METHOD] for case_kind in cases]
         chart_left = LEFT_MARGIN + label_column_width + chart_index * (chart_width + chart_gap)
 
         chart_axes = canvas.axes(chart_left, charts_top, chart_width, chart_height)

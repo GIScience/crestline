@@ -14,8 +14,11 @@ from bench.scene import Scene
 from bench.scene import Window
 from matplotlib import font_manager
 from matplotlib.axes import Axes
+from matplotlib.axis import Axis
 from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
+from matplotlib.ticker import FixedLocator
+from matplotlib.ticker import NullLocator
 from numpy.typing import NDArray
 from shapely import LineString
 
@@ -72,11 +75,6 @@ class Canvas:
         logger.info(f'Saved {description} to {figure_path}')
 
 
-def map_window_title(window: Window) -> str:
-    window_min_x, window_min_y, window_max_x, window_max_y = window
-    return f'Noisy road mask, {window_max_x - window_min_x:.0f} × {window_max_y - window_min_y:.0f} m window'
-
-
 def style_spines(axes: Axes) -> None:
     for side in ('top', 'right', 'left'):
         axes.spines[side].set_visible(False)
@@ -84,28 +82,27 @@ def style_spines(axes: Axes) -> None:
     axes.spines['bottom'].set_color(AXIS_COLOR)
 
 
-def draw_chart_heading(
-    canvas: Canvas,
-    left: float,
-    top: float,
-    title: str,
-    hint: str,
-) -> None:
+def log_ticks(low: float, high: float, steps: tuple[int, ...] = (1,)) -> list[float]:
+    powers = range(int(np.floor(np.log10(low))), int(np.ceil(np.log10(high))) + 1)
+    return [step * 10.0**power for power in powers for step in steps if low <= step * 10.0**power <= high]
+
+
+def fixed_ticks(axis: Axis, ticks: list[float], labels: list[str]) -> None:
+    axis.set_major_locator(FixedLocator(ticks))
+    axis.set_minor_locator(NullLocator())
+    axis.set_ticklabels(labels)
+
+
+def draw_chart_heading(canvas: Canvas, left: float, top: float, title: str, hint: str) -> None:
     canvas.text(left, top - 0.38, title, fontsize=10.5, color=INK_COLOR, weight='semibold')
     canvas.text(left, top - 0.16, hint, fontsize=8.5, color=MUTED_COLOR)
 
 
-def draw_header(
-    canvas: Canvas,
-    title: str,
-    subtitle: str,
-    left_margin: float,
-    right_margin: float,
-) -> None:
-    canvas.text(left_margin, 0.5, title, fontsize=14, color=INK_COLOR, weight='semibold')
-    canvas.text(left_margin, 0.78, subtitle, fontsize=10)
+def _draw_map_header(canvas: Canvas, title: str, subtitle: str) -> None:
+    canvas.text(LEFT_MARGIN, 0.5, title, fontsize=14, color=INK_COLOR, weight='semibold')
+    canvas.text(LEFT_MARGIN, 0.78, subtitle, fontsize=10)
 
-    legend_right = canvas.width - right_margin
+    legend_right = canvas.width - RIGHT_MARGIN
     canvas.text(legend_right, 0.78, 'centerline', fontsize=9, ha='right')
     canvas.mark([legend_right - 0.95, legend_right - 0.72], 0.745, color=ACCENT_COLOR, lw=2)
     canvas.text(legend_right - 1.12, 0.78, 'dead end', fontsize=9, ha='right')
@@ -113,33 +110,22 @@ def draw_header(
 
 
 def _window_crop(scene: Scene, window: Window) -> NDArray[np.bool_]:
-    window_min_x, window_min_y, window_max_x, window_max_y = window
-    crop_col_start, crop_row_start = ~scene.transform * (window_min_x, window_max_y)
-    crop_col_end, crop_row_end = ~scene.transform * (window_max_x, window_min_y)
-    return scene.mask[int(crop_row_start) : int(crop_row_end), int(crop_col_start) : int(crop_col_end)]
+    min_x, min_y, max_x, max_y = window
+    col_start, row_start = ~scene.transform * (min_x, max_y)
+    col_end, row_end = ~scene.transform * (max_x, min_y)
+    return scene.mask[int(row_start) : int(row_end), int(col_start) : int(col_end)]
 
 
 def _inside_window(points: NDArray[np.float64], window: Window) -> NDArray[np.bool_]:
-    window_min_x, window_min_y, window_max_x, window_max_y = window
-    return (
-        (points[:, 0] > window_min_x)
-        & (points[:, 0] < window_max_x)
-        & (points[:, 1] > window_min_y)
-        & (points[:, 1] < window_max_y)
-    )
+    return np.all((points > window[:2]) & (points < window[2:]), axis=1)
 
 
-def _draw_map(
-    axes: Axes,
-    mask_crop: NDArray[np.bool_],
-    predicted_lines: list[LineString],
-    window: Window,
-) -> None:
-    window_min_x, window_min_y, window_max_x, window_max_y = window
+def _draw_map(axes: Axes, mask_crop: NDArray[np.bool_], predicted_lines: list[LineString], window: Window) -> None:
+    min_x, min_y, max_x, max_y = window
     axes.imshow(
         mask_crop,
         cmap=ListedColormap([SURFACE_COLOR, LAND_COLOR]),
-        extent=(window_min_x, window_max_x, window_min_y, window_max_y),
+        extent=(min_x, max_x, min_y, max_y),
         interpolation='nearest',
     )
     for line in predicted_lines:
@@ -156,35 +142,33 @@ def _draw_map(
         zorder=3,
     )
 
-    axes.set_xlim(window_min_x, window_max_x)
-    axes.set_ylim(window_min_y, window_max_y)
+    axes.set_xlim(min_x, max_x)
+    axes.set_ylim(min_y, max_y)
     axes.set_xticks([])
     axes.set_yticks([])
     for spine in axes.spines.values():
         spine.set_color(HAIRLINE_COLOR)
 
 
-def draw_panels(
+def draw_map_panels(
     canvas: Canvas,
-    method_names: list[str],
     method_registry: MethodRegistry,
     scene: Scene,
     window: Window,
-    left_margin: float,
-    right_margin: float,
-    panel_gap: float = 0.14,
-    panel_top: float = 1.55,
+    subtitle: str,
 ) -> None:
+    min_x, min_y, max_x, max_y = window
+    _draw_map_header(canvas, f'Noisy road mask, {max_x - min_x:.0f} × {max_y - min_y:.0f} m window', subtitle)
+
+    panel_gap, panel_top = 0.14, 1.55
+    panel_count = len(method_registry)
+    panel_size = (canvas.width - LEFT_MARGIN - RIGHT_MARGIN - panel_gap * (panel_count - 1)) / panel_count
     mask_crop = _window_crop(scene, window)
-    panel_count = len(method_names)
-    panel_size = (canvas.width - left_margin - right_margin - panel_gap * (panel_count - 1)) / panel_count
 
-    for panel_index, method_name in enumerate(method_names):
-        predicted_lines = as_lines(method_registry[method_name].on_mask(scene.polygon, scene.mask, scene.transform))
-        panel_left = left_margin + panel_index * (panel_size + panel_gap)
-
-        panel_axes = canvas.axes(panel_left, panel_top, panel_size, panel_size)
-        _draw_map(panel_axes, mask_crop, predicted_lines, window)
+    for panel_index, (method_name, method) in enumerate(method_registry.items()):
+        predicted_lines = as_lines(method.on_mask(scene.mask, scene.transform))
+        panel_left = LEFT_MARGIN + panel_index * (panel_size + panel_gap)
+        _draw_map(canvas.axes(panel_left, panel_top, panel_size, panel_size), mask_crop, predicted_lines, window)
 
         panel_f1 = score(predicted_lines, scene.centerlines)['f5']
         canvas.text(panel_left, panel_top - 0.33, method_name, fontsize=11, color=INK_COLOR, weight='semibold')

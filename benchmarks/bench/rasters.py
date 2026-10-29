@@ -11,15 +11,9 @@ from scipy.ndimage import gaussian_filter
 from shapely import MultiPolygon
 from skimage.morphology import skeletonize
 
-MAX_RELATIVE_SHIFT = 0.5
-
 
 def burn(polygon: Shape, raster_shape: tuple[int, ...], transform: Affine) -> NDArray[np.bool_]:
     return rasterize([(polygon, 1)], out_shape=raster_shape, transform=transform).astype(bool)
-
-
-def burn_polygon(polygon: Shape, mask: NDArray[np.bool_], transform: Affine) -> NDArray[np.bool_]:
-    return burn(polygon, mask.shape, transform)
 
 
 def raster_grid(polygon: Shape, resolution: float, padding: int) -> tuple[tuple[int, int], Affine]:
@@ -56,7 +50,7 @@ def noisy_mask(
     padding: int = 40,
     coarse_noise: float = 0.15,
     fine_noise: float = 0.05,
-    max_shift: float = MAX_RELATIVE_SHIFT,
+    max_shift: float = 0.5,
 ) -> tuple[NDArray[np.bool_], Affine]:
     random_generator = np.random.default_rng(seed + 1000)
     raster_shape, transform = raster_grid(polygon, 1.0, padding)

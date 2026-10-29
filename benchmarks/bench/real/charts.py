@@ -10,12 +10,13 @@ from bench.plotting import MUTED_COLOR
 from bench.plotting import NEUTRAL_COLOR
 from bench.plotting import SECONDARY_INK_COLOR
 from bench.plotting import SURFACE_COLOR
+from bench.plotting import fixed_ticks
+from bench.plotting import log_ticks
 from bench.plotting import style_spines
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 from matplotlib.text import Annotation
 from matplotlib.ticker import FixedLocator
-from matplotlib.ticker import NullLocator
 from matplotlib.transforms import Bbox
 from matplotlib.transforms import blended_transform_factory
 from numpy.typing import NDArray
@@ -46,15 +47,6 @@ METHOD_STYLES: dict[str, tuple[str, str]] = {
     'skeletonize + prune': ('skeletonize', '^'),
     'centerline (Voronoi)': ('Voronoi', 'D'),
 }
-
-
-def log_ticks(low: float, high: float) -> list[float]:
-    powers = range(int(np.floor(np.log10(low))), int(np.ceil(np.log10(high))) + 1)
-    decades = [10.0**power for power in powers if low <= 10.0**power <= high]
-    if len(decades) >= 2:
-        return decades
-
-    return [step * 10.0**power for power in powers for step in (1, 2, 5) if low <= step * 10.0**power <= high]
 
 
 def format_score(value: float) -> str:
@@ -144,7 +136,8 @@ def label_line_ends(axes: Axes, ends: list[LineEnd], series_lines: list[Line2D],
 def _value_range(values: list[float], log_scale: bool) -> tuple[float, float, list[float]]:
     if log_scale:
         low, high = min(values) / 1.6, max(values) * 1.6
-        return low, high, log_ticks(low, high)
+        decades = log_ticks(low, high)
+        return low, high, decades if len(decades) >= 2 else log_ticks(low, high, steps=(1, 2, 5))
 
     low, high = np.floor(min(values) * 10) / 10, 1.0
     step = 0.05 if high - low <= 0.2 else 0.1
@@ -182,9 +175,7 @@ def _plot_series(axes: Axes, series: Trends, truth: Trend | None) -> tuple[list[
 
 
 def _format_ticks(axes: Axes, radii: list[int], ticks: list[float], tick_format: Callable[[float], str]) -> None:
-    axes.yaxis.set_major_locator(FixedLocator(ticks))
-    axes.yaxis.set_minor_locator(NullLocator())
-    axes.set_yticklabels([tick_format(tick) for tick in ticks])
+    fixed_ticks(axes.yaxis, ticks, [tick_format(tick) for tick in ticks])
 
     labelled_radii = [radius for radius in radii if radius == radii[0] or radius % 2 == 0 or len(radii) <= 6]
     axes.xaxis.set_major_locator(FixedLocator(labelled_radii))
