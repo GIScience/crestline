@@ -71,9 +71,13 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
     :return: level array
     """
     h, w = state.shape
-    level = np.zeros((h, w), np.int32)
+    level = np.empty((h, w), np.int32)
     queue = np.empty(h * w, np.int32)
     touch = np.zeros((h, w), np.bool_)
+
+    for i in prange(h):
+        for j in range(w):
+            level[i, j] = -(state[i, j] == 2)
 
     for i in prange(1, h - 1):
         for j in range(1, w - 1):
@@ -86,7 +90,7 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
     n = len(sources)
     queue[:n] = sources
 
-    state_r, level_r = state.ravel(), level.ravel()
+    level_r = level.ravel()
     ring = np.array([-w, -1, 1, w, -w - 1, -w + 1, w - 1, w + 1])
     start, mid, step, empty = 0, 0, 0, 0
 
@@ -98,13 +102,15 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
             for o in ring[4 if k < mid else 0 : 4 if cross else 8]:
                 q = queue[k] + o
 
-                if state_r[q] == 2 and level_r[q] == 0:
+                if level_r[q] == -1:
                     level_r[q] = step + 1
                     queue[n] = q
                     n += 1
 
         empty = empty + 1 if n == end else 0
         start, mid, step = mid, end, step + 1
+
+    level[level < 0] = 0
 
     return level
 
