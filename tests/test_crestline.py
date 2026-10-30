@@ -4,6 +4,8 @@ import matplotlib
 import shapely
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Rectangle
+from numba import jit
+from numba import prange
 from pyproj import CRS
 from pyproj import Geod
 from rasterio.features import rasterize
@@ -23,7 +25,6 @@ from crestline.crestline import _flood
 from crestline.crestline import _grid
 from crestline.crestline import _project
 from crestline.crestline import _rasterize
-from crestline.crestline import _ratio
 from crestline.crestline import crestline
 
 TEST_OUTPUT_DIR = Path(__file__).parent / 'output'
@@ -299,6 +300,22 @@ CASES = {
     'blocks': (blocks, 8),
     'mixed': (mixed, 40),
 }
+
+
+@jit(parallel=True, cache=True)
+def _ratio(depth: np.ndarray, dist: np.ndarray):
+    h, w = depth.shape
+    out = np.zeros((h - 4, w - 4), np.float32)
+
+    for i in prange(h - 4):
+        for j in range(w - 4):
+            climb = depth[i + 2, j + 2] - 1
+            total = climb + dist[i + 2, j + 2]
+
+            if climb >= 0 and total > 0:
+                out[i, j] = climb / total
+
+    return out
 
 
 def center_raster(mask):

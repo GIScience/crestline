@@ -141,29 +141,6 @@ def _crests(depth: np.ndarray, reach: int = 2):
 
 
 @jit(parallel=True, cache=True)
-def _ratio(depth: np.ndarray, dist: np.ndarray):
-    """
-    Combine floods into the 0 -> 1 center raster and strip the padding.
-
-    :param depth: 1 = inward flood steps and 0 = outside, padded by 2 px
-    :param dist: flood steps from the crest, padded by 2 px
-    :return: ratio
-    """
-    h, w = depth.shape
-    out = np.zeros((h - 4, w - 4), np.float32)
-
-    for i in prange(h - 4):
-        for j in range(w - 4):
-            climb = depth[i + 2, j + 2] - 1
-            total = climb + dist[i + 2, j + 2]
-
-            if climb >= 0 and total > 0:
-                out[i, j] = climb / total
-
-    return out
-
-
-@jit(parallel=True, cache=True)
 def _scan_fill(x0: int, y0: int, x1: int, y1: int, h: int, w: int):
     """
     Rasterize polygon edges with an even-odd scanline fill.
