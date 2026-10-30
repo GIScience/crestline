@@ -109,6 +109,17 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
     return level
 
 
+@jit(inline='always')
+def _top_aux(depth: np.ndarray, i: int, j: int, reach: int) -> bool:
+    for r in (min(1, reach), reach):
+        for di in range(-r, r + 1):
+            for dj in range(-r, r + 1):
+                if depth[di + i, dj + j] > depth[i, j]:
+                    return False
+
+    return True
+
+
 @jit(parallel=True, cache=True)
 def _crests(depth: np.ndarray, reach: int = 2):
     """
@@ -123,15 +134,8 @@ def _crests(depth: np.ndarray, reach: int = 2):
 
     for i in prange(2, h - 2):
         for j in range(2, w - 2):
-            d = depth[i, j]
-
-            if d:
-                top = True
-                for di in range(-reach, reach + 1):
-                    for dj in range(-reach, reach + 1):
-                        top &= depth[di + i, dj + j] <= d
-
-                state[i, j] = 1 if top else 2
+            if depth[i, j]:
+                state[i, j] = 1 if _top_aux(depth, i, j, reach) else 2
 
     return state
 
