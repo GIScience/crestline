@@ -26,7 +26,8 @@ uv sync --extra cu13
    pixels at least 2 steps deep, so the vector pipeline reads them straight from step 2.
 1. **Link.** Crest points are thinned and linked along the ridges, both scaled by each point's own depth, so narrow and
    wide branches are treated alike. The longest link of every triangle or quad is dropped, and dead ends whose disc fits
-   inside the disc of a much deeper point (edge noise) are pruned.
+   inside the disc of a much deeper point (edge noise) are pruned. Dead ends that face each other across a break of the
+   crest are joined when each is the other's nearest and the straight line between them stays inside the shape.
 
 ## Benchmark
 

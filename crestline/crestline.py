@@ -252,8 +252,18 @@ def _links(points: np.ndarray, heights: np.ndarray, near: np.ndarray) -> np.ndar
     :param near: (m, 2) candidate links
     :return: the links short enough for their depth
     """
-    span = np.hypot(*(points[near[:, 0]] - points[near[:, 1]]).T)
-    return near[span <= 2 * np.maximum(heights[near[:, 0]], heights[near[:, 1]])]
+    return near[_short(points, heights, near)]
+
+
+@jit(parallel=True, cache=True)
+def _short(points: np.ndarray, heights: np.ndarray, near: np.ndarray):
+    short = np.empty(len(near), np.bool_)
+    for e in prange(len(near)):
+        i, j = near[e, 0], near[e, 1]
+        span = math.hypot(float(points[i, 0] - points[j, 0]), float(points[i, 1] - points[j, 1]))
+        short[e] = span <= 2 * max(heights[i], heights[j])
+
+    return short
 
 
 @jit(parallel=True, cache=True)
@@ -568,6 +578,59 @@ def _despur(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, near: np
 
 
 @jit(cache=True)
+def _bridge(points: np.ndarray, pairs: np.ndarray, near: np.ndarray, depth: np.ndarray):
+    """
+    Join dead ends that face each other across a break of the crest: each is the other's nearest such dead end and
+    the straight line between them stays inside the shape.
+
+    :param points: row, col of the thinned crest points
+    :param pairs: links that survived _despur
+    :param near: pairs of points close enough to cover one another
+    :param depth: inward flood steps, unpadded
+    :return: the links with the bridges appended
+    """
+    n = len(points)
+    degree, other = np.zeros(n, np.int64), np.zeros(n, np.int64)
+    for e in range(len(pairs)):
+        i, j = pairs[e, 0], pairs[e, 1]
+        degree[i], degree[j], other[i], other[j] = degree[i] + 1, degree[j] + 1, j, i
+
+    best, mate = np.full(n, np.inf), np.full(n, -1, np.int64)
+    for e in range(len(near)):
+        u, v = near[e, 0], near[e, 1]
+        if degree[u] != 1 or degree[v] != 1 or other[u] == v:
+            continue
+
+        dr, dc = points[v, 0] - points[u, 0], points[v, 1] - points[u, 1]
+        ahead_u = dr * (points[u, 0] - points[other[u], 0]) + dc * (points[u, 1] - points[other[u], 1])
+        ahead_v = dr * (points[other[v], 0] - points[v, 0]) + dc * (points[other[v], 1] - points[v, 1])
+        span = _dist(points, u, v)
+        if ahead_u <= 0 or ahead_v <= 0 or (span >= best[u] and span >= best[v]):
+            continue
+
+        steps, inside = int(np.ceil(span)), True
+        for s in range(steps + 1):
+            r = int(np.rint(points[u, 0] + s * dr / steps))
+            c = int(np.rint(points[u, 1] + s * dc / steps))
+            if depth[r, c] == 0:
+                inside = False
+                break
+
+        if inside:
+            if span < best[u]:
+                best[u], mate[u] = span, v
+            if span < best[v]:
+                best[v], mate[v] = span, u
+
+    mutual = np.array([u for u in range(n) if mate[u] > u and mate[mate[u]] == u], np.int64)
+    out = np.empty((len(pairs) + len(mutual), 2), pairs.dtype)
+    out[: len(pairs)] = pairs
+    out[len(pairs) :, 0], out[len(pairs) :, 1] = mutual, mate[mutual]
+
+    return out
+
+
+@jit(cache=True)
 def _tips(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, crest: np.ndarray, depth: np.ndarray, tip: float):
     """
     Move every dead end to the far end of the crest it was thinned from.
@@ -703,6 +766,8 @@ def crestline(
     if spur > 0:
         pairs = pairs[_despur(points, pairs, heights, near, spur, tip)]
 
+    pairs = _bridge(points, pairs, near, depth)
+
     if hole > 0:
         pairs = pairs[_occluded(points, pairs, heights, mask, hole)]
 
@@ -720,8 +785,10 @@ def crestline(
         xy = np.c_[transform @ tuple(xy.T)]
 
     lines = shapely.line_merge(multilinestrings(linestrings(xy[pairs])))
+
     if simplify:
         lines = lines.simplify(simplify)
+
     if epsg_crs is not None and CRS.from_epsg(epsg_crs).is_geographic:
         lines = _reproject_crs(lines, src_crs=proj_crs, dst_crs=CRS.from_epsg(epsg_crs))
 

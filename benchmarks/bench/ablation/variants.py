@@ -39,6 +39,10 @@ def no_spur_depth_guard(points, pairs, heights, near, spur, tip):
     return _despur(points, pairs, heights, near, spur, np.inf)
 
 
+def no_bridging(points, pairs, near, depth):
+    return pairs
+
+
 def no_tip_extension(points, pairs, heights, crest, depth, tip):
     return _tips(points, pairs, heights, crest, depth, np.inf)
 
@@ -66,6 +70,7 @@ def ablations(thinning_radius: float = 3.0, link_length: float = 10.0) -> dict[s
         'triangles only': Variant('prune', {}, {'_prune': partial(_prune, cycle=3)}),
         'no spur pruning': Variant('despur', {'spur': 0.0}, {}),
         'no spur depth guard': Variant('despur', {}, {'_despur': no_spur_depth_guard}),
+        'no dead-end bridging': Variant('bridge', {}, {'_bridge': no_bridging}),
         'no occluder opening': Variant('occluders', {'hole': 0.0}, {}),
         'no tip extension': Variant('tips', {}, {'_tips': no_tip_extension}),
         'no subpixel refinement': Variant('center', {}, {'_center': no_subpixel_refinement}),
