@@ -49,11 +49,14 @@ def _grid(mask: np.ndarray):
     :return: int8 grid padded by 2 px: 1 = outside (source of the inward flood), 2 = inside (target)
     """
     h, w = mask.shape
-    state = np.ones((h + 4, w + 4), np.int8)
-    for i in prange(h):
-        for j in range(w):
-            if mask[i, j]:
-                state[i + 2, j + 2] = 2
+    state = np.empty((h + 4, w + 4), np.int8)
+
+    for i in prange(h + 4):
+        state[i] = 1
+
+        if 2 <= i < h + 2:
+            for j in range(w):
+                state[i, j + 2] += mask[i - 2, j]
 
     return state
 
