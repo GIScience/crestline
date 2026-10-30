@@ -49,11 +49,14 @@ def _grid(mask: np.ndarray):
     :return: int8 grid padded by 2 px: 1 = outside (source of the inward flood), 2 = inside (target)
     """
     h, w = mask.shape
-    state = np.ones((h + 4, w + 4), np.int8)
-    for i in prange(h):
-        for j in range(w):
-            if mask[i, j]:
-                state[i + 2, j + 2] = 2
+    state = np.empty((h + 4, w + 4), np.int8)
+
+    for i in prange(h + 4):
+        state[i] = 1
+
+        if 2 <= i < h + 2:
+            for j in range(w):
+                state[i, j + 2] += mask[i - 2, j]
 
     return state
 
@@ -68,9 +71,13 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
     :return: level array
     """
     h, w = state.shape
-    level = np.zeros((h, w), np.int32)
+    level = np.empty((h, w), np.int32)
     queue = np.empty(h * w, np.int32)
     touch = np.zeros((h, w), np.bool_)
+
+    for i in prange(h):
+        for j in range(w):
+            level[i, j] = -(state[i, j] == 2)
 
     for i in prange(1, h - 1):
         for j in range(1, w - 1):
@@ -83,7 +90,7 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
     n = len(sources)
     queue[:n] = sources
 
-    state_r, level_r = state.ravel(), level.ravel()
+    level_r = level.ravel()
     ring = np.array([-w, -1, 1, w, -w - 1, -w + 1, w - 1, w + 1])
     start, mid, step, empty = 0, 0, 0, 0
 
@@ -95,7 +102,7 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
             for o in ring[4 if k < mid else 0 : 4 if cross else 8]:
                 q = queue[k] + o
 
-                if state_r[q] == 2 and level_r[q] == 0:
+                if level_r[q] == -1:
                     level_r[q] = step + 1
                     queue[n] = q
                     n += 1
@@ -103,7 +110,20 @@ def _flood(state: np.ndarray, neighbourhood: int = 0) -> np.ndarray:
         empty = empty + 1 if n == end else 0
         start, mid, step = mid, end, step + 1
 
+    level[level < 0] = 0
+
     return level
+
+
+@jit(inline='always')
+def _top_aux(depth: np.ndarray, i: int, j: int, reach: int) -> bool:
+    for r in (min(1, reach), reach):
+        for di in range(-r, r + 1):
+            for dj in range(-r, r + 1):
+                if depth[di + i, dj + j] > depth[i, j]:
+                    return False
+
+    return True
 
 
 @jit(parallel=True, cache=True)
@@ -120,40 +140,10 @@ def _crests(depth: np.ndarray, reach: int = 2):
 
     for i in prange(2, h - 2):
         for j in range(2, w - 2):
-            d = depth[i, j]
-
-            if d:
-                top = True
-                for di in range(-reach, reach + 1):
-                    for dj in range(-reach, reach + 1):
-                        top &= depth[di + i, dj + j] <= d
-
-                state[i, j] = 1 if top else 2
+            if depth[i, j]:
+                state[i, j] = 1 if _top_aux(depth, i, j, reach) else 2
 
     return state
-
-
-@jit(parallel=True, cache=True)
-def _ratio(depth: np.ndarray, dist: np.ndarray):
-    """
-    Combine floods into the 0 -> 1 center raster and strip the padding.
-
-    :param depth: 1 = inward flood steps and 0 = outside, padded by 2 px
-    :param dist: flood steps from the crest, padded by 2 px
-    :return: ratio
-    """
-    h, w = depth.shape
-    out = np.zeros((h - 4, w - 4), np.float32)
-
-    for i in prange(h - 4):
-        for j in range(w - 4):
-            climb = depth[i + 2, j + 2] - 1
-            total = climb + dist[i + 2, j + 2]
-
-            if climb >= 0 and total > 0:
-                out[i, j] = climb / total
-
-    return out
 
 
 @jit(parallel=True, cache=True)
@@ -300,7 +290,7 @@ def _on_ridge(points: np.ndarray, pairs: np.ndarray, depth: np.ndarray, dip: flo
     return mask
 
 
-@jit(cache=True)
+@jit(parallel=True, cache=True)
 def _prune(points: np.ndarray, pairs: np.ndarray, cycle: int = 4):
     """
     Drop shortcut links.
@@ -321,36 +311,43 @@ def _prune(points: np.ndarray, pairs: np.ndarray, cycle: int = 4):
 
     start = np.cumsum(degree)
     nbr = np.empty(start[-1], np.int64)
+    dst = np.empty(start[-1], np.float64)
     fill = start[:-1].copy()
+
     for e in range(m):
         i, j = pairs[e, 0], pairs[e, 1]
-        nbr[fill[i]] = j
+        d_ij = _dist(points, i, j)
+
+        nbr[fill[i]], dst[fill[i]] = j, d_ij
         fill[i] += 1
-        nbr[fill[j]] = i
+
+        nbr[fill[j]], dst[fill[j]] = i, d_ij
         fill[j] += 1
 
     keep = np.ones(m, np.bool_)
-    for e in range(m):
+    for e in prange(m):
         i, j = pairs[e, 0], pairs[e, 1]
         d_ij = _dist(points, i, j)
 
         for a in range(start[i], start[i + 1]):
             k = nbr[a]
-            if k == j or _dist(points, i, k) >= d_ij:
+            if k == j or dst[a] >= d_ij:
                 continue
 
             for b in range(start[k], start[k + 1]):
                 q = nbr[b]
-                if q == i or _dist(points, k, q) >= d_ij:
+                if q == i or dst[b] >= d_ij:
                     continue
+
                 if q == j:
                     keep[e] = False
                     break
+
                 if cycle < 4:
                     continue
 
                 for c in range(start[j], start[j + 1]):
-                    if nbr[c] == q and _dist(points, q, j) < d_ij:
+                    if nbr[c] == q and dst[c] < d_ij:
                         keep[e] = False
                         break
 
@@ -720,7 +717,7 @@ def crestline(
         left, top, resolution = grid
         xy = np.c_[left + xy[:, 0] * resolution, top - xy[:, 1] * resolution]
     elif transform is not None:
-        xy = np.c_[transform * tuple(xy.T)]
+        xy = np.c_[transform @ tuple(xy.T)]
 
     lines = shapely.line_merge(multilinestrings(linestrings(xy[pairs])))
     if simplify:
