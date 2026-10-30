@@ -290,7 +290,7 @@ def _on_ridge(points: np.ndarray, pairs: np.ndarray, depth: np.ndarray, dip: flo
     return mask
 
 
-@jit(cache=True)
+@jit(parallel=True, cache=True)
 def _prune(points: np.ndarray, pairs: np.ndarray, cycle: int = 4):
     """
     Drop shortcut links.
@@ -311,36 +311,43 @@ def _prune(points: np.ndarray, pairs: np.ndarray, cycle: int = 4):
 
     start = np.cumsum(degree)
     nbr = np.empty(start[-1], np.int64)
+    dst = np.empty(start[-1], np.float64)
     fill = start[:-1].copy()
+
     for e in range(m):
         i, j = pairs[e, 0], pairs[e, 1]
-        nbr[fill[i]] = j
+        d_ij = _dist(points, i, j)
+
+        nbr[fill[i]], dst[fill[i]] = j, d_ij
         fill[i] += 1
-        nbr[fill[j]] = i
+
+        nbr[fill[j]], dst[fill[j]] = i, d_ij
         fill[j] += 1
 
     keep = np.ones(m, np.bool_)
-    for e in range(m):
+    for e in prange(m):
         i, j = pairs[e, 0], pairs[e, 1]
         d_ij = _dist(points, i, j)
 
         for a in range(start[i], start[i + 1]):
             k = nbr[a]
-            if k == j or _dist(points, i, k) >= d_ij:
+            if k == j or dst[a] >= d_ij:
                 continue
 
             for b in range(start[k], start[k + 1]):
                 q = nbr[b]
-                if q == i or _dist(points, k, q) >= d_ij:
+                if q == i or dst[b] >= d_ij:
                     continue
+
                 if q == j:
                     keep[e] = False
                     break
+
                 if cycle < 4:
                     continue
 
                 for c in range(start[j], start[j + 1]):
-                    if nbr[c] == q and _dist(points, q, j) < d_ij:
+                    if nbr[c] == q and dst[c] < d_ij:
                         keep[e] = False
                         break
 
