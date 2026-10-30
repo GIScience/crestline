@@ -710,7 +710,7 @@ def crestline(
         left, top, resolution = grid
         xy = np.c_[left + xy[:, 0] * resolution, top - xy[:, 1] * resolution]
     elif transform is not None:
-        xy = np.c_[transform * tuple(xy.T)]
+        xy = np.c_[transform @ tuple(xy.T)]
 
     lines = shapely.line_merge(multilinestrings(linestrings(xy[pairs])))
     if simplify:
