@@ -9,8 +9,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 import shapely
+from scipy.spatial import cKDTree
 from shapely import Polygon
 
+from crestline.crestline import _bridge
 from crestline.crestline import _flood
 from crestline.crestline import _grid
 from crestline.crestline import _on_ridge
@@ -178,3 +180,44 @@ def test_on_ridge_rejects_links_crossing_a_neck(neck, kept):
     mask = _on_ridge(points, np.array([[0, 1]]), depth, 0.65, 64)
 
     assert bool(mask[0]) is kept
+
+
+def _bridged(points, pairs, depth, radius=10):
+    points, pairs = np.array(points), np.array(pairs, np.int64).reshape(-1, 2)
+    near = cKDTree(points).query_pairs(radius, output_type='ndarray')
+    out = _bridge(points, pairs, near, depth)
+
+    assert (out[: len(pairs)] == pairs).all()
+    return {tuple(sorted(row)) for row in out[len(pairs) :].tolist()}
+
+
+FACING = [(5, 2), (5, 6), (5, 10), (5, 16), (5, 20), (5, 24)]
+CHAINS = [(0, 1), (1, 2), (3, 4), (4, 5)]
+
+
+def test_bridge_joins_dead_ends_facing_each_other_across_a_break():
+    assert _bridged(FACING, CHAINS, np.full((11, 30), 3, np.int32)) == {(2, 3)}
+
+
+def test_bridge_never_crosses_the_background():
+    depth = np.full((11, 30), 3, np.int32)
+    depth[:, 13] = 0
+
+    assert _bridged(FACING, CHAINS, depth) == set()
+
+
+def test_bridge_leaves_side_by_side_dead_ends_apart():
+    points = [(5, 2), (5, 6), (5, 10), (9, 2), (9, 6), (9, 10)]
+
+    assert _bridged(points, CHAINS, np.full((15, 15), 3, np.int32)) == set()
+
+
+def test_bridge_joins_only_mutual_nearest_dead_ends():
+    points = [(5, 2), (5, 6), (5, 10), (5, 14), (5, 18), (5, 22), (8, 16), (8, 20), (8, 24)]
+    pairs = [(0, 1), (1, 2), (3, 4), (4, 5), (6, 7), (7, 8)]
+
+    assert _bridged(points, pairs, np.full((12, 30), 3, np.int32)) == {(2, 3)}
+
+
+def test_bridge_without_links_adds_nothing():
+    assert _bridged(FACING, [], np.full((11, 30), 3, np.int32)) == set()

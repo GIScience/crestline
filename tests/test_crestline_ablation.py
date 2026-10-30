@@ -67,6 +67,21 @@ def occluded_road():
 
 
 @pytest.fixture(scope='module')
+def pinched_road():
+    road = _scene((90, 300), (10, 30, 10, 290), (70, 5, 10, 290))
+    road.mask[70:72, 150:154] = False
+    road.mask[73:75, 150:154] = False
+    return road
+
+
+@pytest.fixture(scope='module')
+def cut_road():
+    road = _scene((90, 300), (10, 30, 10, 290), (70, 5, 10, 290))
+    road.mask[70:75, 150:152] = False
+    return road
+
+
+@pytest.fixture(scope='module')
 def diagonal_road():
     rows, cols = np.indices((200, 200))
     return Scene(
@@ -140,6 +155,30 @@ def test_without_the_spur_depth_guard_every_dead_end_road_is_eaten(parallel_road
 
     assert connected_components(full) == 2
     assert connected_components(ablated) == 0
+
+
+def no_bridging(points, pairs, near, depth):
+    return pairs
+
+
+def test_without_dead_end_bridging_a_noise_pinch_splits_a_narrow_road(pinched_road):
+    full = crestline(pinched_road.mask)
+    with patch('crestline.crestline._bridge', no_bridging):
+        ablated = crestline(pinched_road.mask)
+
+    assert connected_components(full) == 2
+    assert dead_ends(full) == 4
+    assert connected_components(ablated) == 3
+    assert dead_ends(ablated) == 6
+
+
+def test_dead_end_bridging_never_crosses_the_background(cut_road):
+    full = crestline(cut_road.mask)
+    with patch('crestline.crestline._bridge', no_bridging):
+        ablated = crestline(cut_road.mask)
+
+    assert connected_components(full) == connected_components(ablated) == 3
+    assert dead_ends(full) == dead_ends(ablated) == 6
 
 
 def test_without_spur_pruning_every_bump_on_a_noisy_edge_leaves_a_dead_end(noisy_road):
