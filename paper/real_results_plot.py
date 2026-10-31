@@ -20,7 +20,8 @@ CENTERLINES = DATA / 'ldz_road_network_centerlines.gpkg'
 RADIUS_KM = 2
 RESOLUTION = 0.5
 WINDOW_OFFSET = (300.0, 350.0)
-WINDOW_SIZE = 1500.0
+WINDOW_WIDTH = 1500.0
+WINDOW_HEIGHT = 750.0
 
 plt.rcParams.update(
     {
@@ -142,15 +143,20 @@ true_dead = true_dead_ends(truth, half_widths(network, roads[candidates])[owner[
 lines = as_lines(crestline(polygon, resolution=RESOLUTION))
 ends = dead_end_points(lines)
 
-half = WINDOW_SIZE / 2
 window_x, window_y = center.x + WINDOW_OFFSET[0], center.y + WINDOW_OFFSET[1]
-window = (window_x - half, window_y - half, window_x + half, window_y + half)
+window = (
+    window_x - WINDOW_WIDTH / 2,
+    window_y - WINDOW_HEIGHT / 2,
+    window_x + WINDOW_WIDTH / 2,
+    window_y + WINDOW_HEIGHT / 2,
+)
 
 fig_w, margin, head, foot = 3.5, 0.04, 0.04, 0.25
-size = fig_w - 2 * margin
-fig_h = head + size + foot
+axes_w = fig_w - 2 * margin
+axes_h = axes_w * WINDOW_HEIGHT / WINDOW_WIDTH
+fig_h = head + axes_h + foot
 fig = plt.figure(figsize=(fig_w, fig_h), facecolor=surface)
-ax = fig.add_axes([margin / fig_w, foot / fig_h, size / fig_w, size / fig_h])
+ax = fig.add_axes([margin / fig_w, foot / fig_h, axes_w / fig_w, axes_h / fig_h])
 
 gpd.GeoSeries([shapely.clip_by_rect(polygon, *window)]).plot(ax=ax, color=land, linewidth=0)
 
