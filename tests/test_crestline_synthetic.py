@@ -33,10 +33,6 @@ def _mock_warm():
 
 
 def _record_running_time(fn, repeat=3):
-    """
-    Decorator: run `fn` `repeat` times and return (its result, best wall clock in seconds).
-    """
-
     @functools.wraps(fn)
     def inner(*args, **kwargs):
         best, out = float('inf'), None
@@ -72,7 +68,9 @@ def _comb_test_case(n, length, tall, short):
 
 
 @pytest.mark.parametrize(
-    'merge, holed, expected_missing', [(False, True, 50), (True, False, 0)], ids=['overlapping', 'unioned']
+    'merge, holed, expected_missing',
+    [(False, True, 50), (True, False, 0)],
+    ids=['overlapping', 'unioned'],
 )
 def test_rasterize_scan_fill_overlapping_parts(merge, holed, expected_missing):
     parts = [shapely.box(0, 0, 10, 10), shapely.box(5, 0, 15, 10)]
@@ -99,43 +97,18 @@ def test_rasterize_cost_driven_by_vertical_edges():
     assert t_up > t_lie
 
 
-# TODO: ensure this test will be on cuda
 def test_flood_cost_is_pixel_bound_not_depth_bound_on_cuda():
-    """
-    Bars of equal pixel count but 100x different depth. A bar's max flood depth is width // 2,
-    so width is a clean depth knob at constant area and constant bounding box.
-
-    On CPU each pixel is enqueued exactly once, so runtime should barely move. This is what
-    localises the depth sensitivity to crestline/cuda.py, where flood() pays one kernel launch
-    and one blocking copy_to_host() *per step*.
-    """
     total = 4_000_000
     runs = [_timed_flood(_grid(np.ones((width, total // width), bool))) for width in (20, 200, 2000)]
     depths, times = [int(level.max()) for level, _ in runs], [t for _, t in runs]
 
-    assert depths == [10, 100, 1000]  # 100x more sequential steps...
-    assert max(times) < 3 * min(times)  # ...for near-constant CPU time
+    assert depths == [10, 100, 1000]
+    assert max(times) < 3 * min(times)
 
 
-# TODO: confirm this memory test's logic (I'm not familiar with)
 @pytest.mark.skipif(not Path('/proc/self/status').exists(), reason='needs /proc (Linux)')
 def test_flood_memory_scales_with_bbox():
-    """
-    _flood allocates level (int32) + queue (int32) + touch (bool) = ~9 bytes per *bounding box*
-    pixel, however empty the box is. `queue` is sized h*w although it can only ever hold flooded
-    pixels. A 100 km x 100 km extent at 1 m would reserve ~90 GB for a handful of roads.
-
-    Resident cost is lower than that - measured ~3 B/px - because level/queue pages are faulted
-    lazily and a sparse raster writes almost none of them; `touch` is the one array the seeding
-    loop fills completely. So we assert the *scaling*, not an absolute figure: same 40k filled
-    pixels, 4x the bounding box, and memory must follow the box.
-    """
-
     def peak_bytes(side):
-        # Measure in a child so an earlier test's allocations are out of the picture - but read
-        # VmHWM, not ru_maxrss: the latter is inherited across fork+exec, so a heavy parent leaves
-        # the child's watermark already above anything _flood adds. clear_refs resets VmHWM to the
-        # current RSS, which ru_maxrss has no equivalent for.
         probe = textwrap.dedent(f"""
             import numpy as np
             from crestline.crestline import _flood, _grid
@@ -168,11 +141,6 @@ def test_flood_memory_scales_with_bbox():
 
 @pytest.mark.parametrize('neck, kept', [(10, True), (7, True), (6, False), (0, False)])
 def test_on_ridge_rejects_links_crossing_a_neck(neck, kept):
-    """
-    A link survives iff the depth everywhere along it stays >= dip * min(depth at its two ends).
-
-    Ends sit at depth 10 and dip is 0.65, so the threshold is exactly 6.5.
-    """
     depth = np.full((21, 61), 10, np.int32)
     depth[:, 28:33] = neck
 

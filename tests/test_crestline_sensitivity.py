@@ -16,16 +16,12 @@ from test_crestline_occluded import _ring
 
 from crestline.crestline import crestline
 
-# Define output directory matching requested path
 TEST_OUTPUT_DIR = Path(__file__).parent / 'output' / 'test_sensitivity'
-
-# Define parameter value grids
 SPUR_VALUES = (1, 1.5, 2, 2.5, 3)
 TIP_VALUES = (0.05, 0.25, 0.5, 0.75, 0.95)
 RADIUS_K_VALUES = (0.05, 0.15, 0.35, 0.55, 0.65)
 
 
-# Standalone builder functions to avoid calling pytest fixtures directly
 def make_parallel_roads():
     return _scene((102, 410), (5, 60, 5, 405), (85, 12, 5, 405)).mask
 
@@ -61,9 +57,7 @@ def make_diagonal_road():
     return np.abs(rows - cols) <= 21
 
 
-# Comprehensive dictionary combining all test cases without fixture dependencies
 ALL_SENSITIVITY_CASES = {
-    # Standard CASES from test_crestline.py
     **{name: (lambda m=make(): m, n) for name, (make, n) in CASES.items()},
     # Ablation scenes using standalone builders
     'ablation_parallel_roads': (make_parallel_roads, 2),
@@ -87,21 +81,13 @@ ALL_SENSITIVITY_CASES = {
 @pytest.mark.parametrize('tip', TIP_VALUES)
 @pytest.mark.parametrize('radius_k', RADIUS_K_VALUES)
 def test_crestline_comprehensive_sensitivity(name, spur, tip, radius_k):
-    """
-    Runs the full parameter sensitivity sweep across all test geometries from
-    test_crestline.py, test_crestline_ablation.py, and test_crestline_occluded.py.
-    Saves visualization plots to tests/output/test_sensitivity/{name}/.
-    """
     make, expected_n_lines = ALL_SENSITIVITY_CASES[name]
     mask = make()
 
-    # Execute crestline with parameterized sensitivity arguments
     lines = crestline(mask, simplify=1.0, spur=spur, tip=tip, radius_k=radius_k)
 
-    # Validate output structure
     assert lines is not None
 
-    # Generate and save diagnostic plots for sensitivity analysis
     h, w = mask.shape
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.set_facecolor('#0b0b12')
@@ -124,7 +110,6 @@ def test_crestline_comprehensive_sensitivity(name, spur, tip, radius_k):
     fig.savefig(output_dir / filename, dpi=100, bbox_inches='tight')
     plt.close(fig)
 
-    # Verify that resulting line coordinates remain valid within the raster mask bounds
     for g in lines.geoms:
         for x, y in g.coords:
             ix, iy = int(x), int(y)
