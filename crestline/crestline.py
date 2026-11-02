@@ -684,7 +684,15 @@ def _bridge(points: np.ndarray, pairs: np.ndarray, near: np.ndarray, depth: np.n
 
 
 @jit(cache=True)
-def _tips(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, crest: np.ndarray, depth: np.ndarray, tip: float, radius_k: float = 0.35):
+def _tips(
+    points: np.ndarray,
+    pairs: np.ndarray,
+    heights: np.ndarray,
+    crest: np.ndarray,
+    depth: np.ndarray,
+    tip: float,
+    radius_k: float = 0.35,
+):
     """
     Move every dead end, in place, to the far end of the crest it was thinned from.
 

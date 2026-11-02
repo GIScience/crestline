@@ -1,5 +1,6 @@
 from itertools import product
-from typing import Any, NamedTuple
+from typing import Any
+from typing import NamedTuple
 
 
 class Variant(NamedTuple):

@@ -1,8 +1,8 @@
+import re
 import time
 from functools import partial
 from itertools import product
 from typing import Any
-import re
 
 import numpy as np
 import pandas as pd
@@ -169,25 +169,26 @@ def generate_sensitivity_report(table: pd.DataFrame) -> None:
     failing_configs = sensitive_rows['variant'].nunique()
 
     report_lines = [
-        "# Crestline Algorithm Sensitivity Analysis Report",
-        "\nThis report summarizes parameter sensitivity across the grid sweep for `spur`, `tip`, and `radius_k` against the default baseline (`s=2, t=0.5, rk=0.35`).\n",
-        "## Executive Summary",
-        f"- **Total Parameter Configurations Evaluated:** {total_configs}",
-        f"- **Stable Configurations (No Significant Change):** {total_configs - failing_configs}",
-        f"- **Sensitive / Diverging Configurations:** {failing_configs}\n",
-        
-        "## Failing / Sensitive Configurations",
-        "The following parameter combinations produced statistically significant behavioral deviations or performance degradation compared to the baseline:\n"
+        '# Crestline Algorithm Sensitivity Analysis Report',
+        '\nThis report summarizes parameter sensitivity across the grid sweep for `spur`, `tip`, and `radius_k` against the default baseline (`s=2, t=0.5, rk=0.35`).\n',
+        '## Executive Summary',
+        f'- **Total Parameter Configurations Evaluated:** {total_configs}',
+        f'- **Stable Configurations (No Significant Change):** {total_configs - failing_configs}',
+        f'- **Sensitive / Diverging Configurations:** {failing_configs}\n',
+        '## Failing / Sensitive Configurations',
+        'The following parameter combinations produced statistically significant behavioral deviations or performance degradation compared to the baseline:\n',
     ]
 
     if not sensitive_rows.empty:
-        report_lines.extend([
-            "| Source | Variant | Spur (`s`) | Tip (`t`) | Radius_k (`rk`) | Metric | Baseline Mean | Variant Mean | Delta | Verdict | p_holm |",
-            "| :--- | :--- | :---: | :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: |"
-        ])
+        report_lines.extend(
+            [
+                '| Source | Variant | Spur (`s`) | Tip (`t`) | Radius_k (`rk`) | Metric | Baseline Mean | Variant Mean | Delta | Verdict | p_holm |',
+                '| :--- | :--- | :---: | :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: |',
+            ]
+        )
         for _, r in sensitive_rows.iterrows():
             variant_str = str(r['variant'])
-            
+
             s_match = re.search(r's=([^_]+)', variant_str)
             t_match = re.search(r't=([^_]+)', variant_str)
             rk_match = re.search(r'rk=([^_]+)', variant_str)
@@ -200,9 +201,11 @@ def generate_sensitivity_report(table: pd.DataFrame) -> None:
                 f"| {r['source']} | `{variant_str}` | {s_val} | {t_val} | {rk_val} | `{r['metric']}` | {r['full']:.3f} | {r['variant_mean']:.3f} | {r['delta']:+.3f} | **{r['verdict']}** | {r['p_holm']:.4f} |"
             )
     else:
-        report_lines.append("_No sensitive or failing configurations found. All parameter variations match the baseline stability._\n")
+        report_lines.append(
+            '_No sensitive or failing configurations found. All parameter variations match the baseline stability._\n'
+        )
 
-    REPORT_PATH.write_text("\n".join(report_lines))
+    REPORT_PATH.write_text('\n'.join(report_lines))
     logger.info(f'Wrote sensitivity report to {REPORT_PATH}')
 
 

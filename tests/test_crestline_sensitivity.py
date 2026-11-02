@@ -6,11 +6,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from crestline.crestline import crestline
+from test_crestline import CASES
+from test_crestline import center_raster
+from test_crestline_ablation import MODS
+from test_crestline_ablation import _scene
+from test_crestline_occluded import OCCLUDED
+from test_crestline_occluded import _occlude
+from test_crestline_occluded import _ring
 
-from test_crestline import CASES, center_raster
-from test_crestline_ablation import MODS, _scene
-from test_crestline_occluded import OCCLUDED, _occlude, _ring
+from crestline.crestline import crestline
 
 # Define output directory matching requested path
 TEST_OUTPUT_DIR = Path(__file__).parent / 'output' / 'test_sensitivity'
@@ -29,7 +33,7 @@ def make_parallel_roads():
 def make_noisy_road():
     road = _scene((80, 300), (25, 30, 10, 290))
     for row, col in MODS:
-        road.mask[row: row + 6, col: col + 6] = True
+        road.mask[row : row + 6, col : col + 6] = True
     return road.mask
 
 
@@ -61,7 +65,6 @@ def make_diagonal_road():
 ALL_SENSITIVITY_CASES = {
     # Standard CASES from test_crestline.py
     **{name: (lambda m=make(): m, n) for name, (make, n) in CASES.items()},
-
     # Ablation scenes using standalone builders
     'ablation_parallel_roads': (make_parallel_roads, 2),
     'ablation_noisy_road': (make_noisy_road, 1),
@@ -69,7 +72,6 @@ ALL_SENSITIVITY_CASES = {
     'ablation_pinched_road': (make_pinched_road, 2),
     'ablation_cut_road': (make_cut_road, 3),
     'ablation_diagonal_road': (make_diagonal_road, 1),
-
     # Occlusion & Topology cases from test_crestline_occluded.py
     'occluded_car': (lambda: OCCLUDED['car'][0](), 2),
     'occluded_centre': (lambda: OCCLUDED['centre'][0](), 2),
@@ -94,13 +96,7 @@ def test_crestline_comprehensive_sensitivity(name, spur, tip, radius_k):
     mask = make()
 
     # Execute crestline with parameterized sensitivity arguments
-    lines = crestline(
-        mask,
-        simplify=1.0,
-        spur=spur,
-        tip=tip,
-        radius_k=radius_k
-    )
+    lines = crestline(mask, simplify=1.0, spur=spur, tip=tip, radius_k=radius_k)
 
     # Validate output structure
     assert lines is not None
