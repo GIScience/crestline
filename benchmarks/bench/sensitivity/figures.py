@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 from bench.ablation.figures import METRICS
 from bench.ablation.figures import SOURCES
-from bench.ablation.figures import Metric
 from bench.ablation.figures import _draw_legend
 from bench.environment import OUTPUT_DIR
 from bench.plotting import ACCENT_COLOR
@@ -51,7 +50,16 @@ def _sweep(table: pd.DataFrame, parameter: str) -> pd.DataFrame:
     return rows.sort_values('value')
 
 
-def draw_sweep(axes: Axes, rows: pd.DataFrame, metric: Metric) -> None:
+def _y_ticks(low: float, high: float) -> tuple[list[float], list[str]]:
+    ticks = [tick for tick in MaxNLocator(3).tick_values(low, high) if low <= tick <= high]
+    step = ticks[1] - ticks[0] if len(ticks) > 1 else max(abs(high - low), 1.0)
+    decimals = max(0, -int(np.floor(np.log10(step))))
+    while decimals < 6 and any(abs(round(tick, decimals) - tick) > 1e-6 * step for tick in ticks):
+        decimals += 1
+    return ticks, [f'{round(tick, decimals) + 0.0:,.{decimals}f}' for tick in ticks]
+
+
+def draw_sweep(axes: Axes, rows: pd.DataFrame) -> None:
     values = rows['value'].to_numpy(float)
     means = rows['variant_mean'].to_numpy(float)
     full_value = rows['full'].iloc[0]
@@ -66,12 +74,12 @@ def draw_sweep(axes: Axes, rows: pd.DataFrame, metric: Metric) -> None:
 
     spread = np.nanmax(means) - np.nanmin(means)
     margin = 0.15 * spread if spread > 0 else max(abs(full_value) * 0.1, 0.5)
-    axes.set_ylim(np.nanmin(means) - margin, np.nanmax(means) + margin)
+    low, high = np.nanmin(means) - margin, np.nanmax(means) + margin
+    axes.set_ylim(low, high)
     axes.set_xlim(values.min() - 0.08 * np.ptp(values), values.max() + 0.08 * np.ptp(values))
 
     fixed_ticks(axes.xaxis, list(values), [f'{value:g}' for value in values])
-    axes.yaxis.set_major_locator(MaxNLocator(3))
-    axes.yaxis.set_major_formatter(lambda tick, _: metric.value_format.format(tick))
+    fixed_ticks(axes.yaxis, *_y_ticks(low, high))
     axes.tick_params(axis='both', length=0, labelsize=7.5, labelcolor=MUTED_COLOR, pad=3)
     axes.grid(axis='y', color=HAIRLINE_COLOR, lw=0.7, zorder=0)
     style_spines(axes)
@@ -117,7 +125,7 @@ def sensitivity_figure(table: pd.DataFrame) -> None:
             for metric_index, metric in enumerate(METRICS):
                 rows = sweep[sweep['metric'] == metric.key]
                 chart_left = left + label_width + metric_index * (chart_width + gap)
-                draw_sweep(canvas.axes(chart_left, row_top, chart_width, row_height), rows, metric)
+                draw_sweep(canvas.axes(chart_left, row_top, chart_width, row_height), rows)
 
                 if parameter_index == 0:
                     draw_chart_heading(canvas, chart_left, top, metric.title, metric.hint)

@@ -691,7 +691,7 @@ def _tips(
     crest: np.ndarray,
     depth: np.ndarray,
     tip: float,
-    radius_k: float = 0.35,
+    radius_k: float,
 ):
     """
     Move every dead end, in place, to the far end of the crest it was thinned from.
@@ -850,7 +850,7 @@ def crestline(
     if len(pairs) == 0:
         return MultiLineString()
 
-    _tips(points, pairs, heights, crest, depth, tip)
+    _tips(points, pairs, heights, crest, depth, tip, radius_k)
     centers = _center(points, heights, crest, depth)
 
     xy = np.c_[centers[:, 1], centers[:, 0]]

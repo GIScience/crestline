@@ -77,6 +77,17 @@ uv sync --extra benchmark
 uv run python benchmarks/ablation_benchmark.py
 ```
 
+## Sensitivity
+
+![](benchmarks/output/sensitivity_benchmark.png)
+
+### Reproduce
+
+```bash
+uv sync --extra benchmark
+uv run python benchmarks/sensitivity_benchmark.py
+```
+
 ## Limitations
 
 Disjoint parts of a shape are processed independently with no bridging of the gaps between them.
