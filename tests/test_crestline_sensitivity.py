@@ -1,14 +1,16 @@
 from pathlib import Path
+
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-
 from crestline.crestline import crestline
+
 from test_crestline import CASES, center_raster
-from test_crestline_ablation import _scene, MODS
-from test_crestline_occluded import OCCLUDED, _ring, _occlude
+from test_crestline_ablation import MODS, _scene
+from test_crestline_occluded import OCCLUDED, _occlude, _ring
 
 # Define output directory matching requested path
 TEST_OUTPUT_DIR = Path(__file__).parent / 'output' / 'test_sensitivity'
