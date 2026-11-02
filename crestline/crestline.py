@@ -684,7 +684,7 @@ def _bridge(points: np.ndarray, pairs: np.ndarray, near: np.ndarray, depth: np.n
 
 
 @jit(cache=True)
-def _tips(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, crest: np.ndarray, depth: np.ndarray, tip: float):
+def _tips(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, crest: np.ndarray, depth: np.ndarray, tip: float, radius_k: float = 0.35):
     """
     Move every dead end, in place, to the far end of the crest it was thinned from.
 
@@ -694,6 +694,7 @@ def _tips(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, crest: np.
     :param crest: crest raster, padded by 2 px
     :param depth: inward flood steps, unpadded
     :param tip: the new end must stay deeper than tip * the old one
+    :param radius_k: radius scaling for crest height; default: 0.35
     """
     n, (n_rows, n_cols) = len(points), depth.shape
     degree, neighbour = np.zeros(n, np.int64), np.zeros(n, np.int64)
@@ -710,7 +711,7 @@ def _tips(points: np.ndarray, pairs: np.ndarray, heights: np.ndarray, crest: np.
 
         row, col = points[end, 0], points[end, 1]
         d_row, d_col = row - points[neighbour[end], 0], col - points[neighbour[end], 1]
-        radius = max(0.35 * heights[end], 3.0)
+        radius = max(radius_k * heights[end], 3.0)
         reach, farthest, target = int(radius), 0, (row, col)
 
         for r in range(max(row - reach, 0), min(row + reach + 1, n_rows)):
@@ -761,6 +762,7 @@ def crestline(
     resolution: float | None = None,
     transform: Affine | None = None,
     simplify: float = 0.0,
+    radius_k: float = 0.35,
     dip: float = 0.65,
     spur: float = 2.0,
     tip: float = 0.75,
@@ -775,6 +777,7 @@ def crestline(
     :param resolution: pixel size in map units, required for a polygon
     :param transform: affine pixel -> map for a mask (e.g. rasterio's); None keeps pixel coordinates
     :param simplify: Douglas-Peucker tolerance in output units, 0 = off
+    :param radius_k: radius scaling for crest depth
     :param dip: a link's depth must stay above dip * the depth of its shallower end
     :param spur: prune dead ends whose disc fits inside spur * the disc of a deeper point, 0 = off
     :param tip: ...if they are shallower than tip * its depth
@@ -819,7 +822,7 @@ def crestline(
     by_depth = np.argsort(-crest_depth, kind='stable')
     crest_rows, crest_cols, crest_depth = crest_rows[by_depth], crest_cols[by_depth], crest_depth[by_depth]
 
-    kept = _thin(crest_rows, crest_cols, mask.shape[0], mask.shape[1], np.maximum(0.35 * crest_depth, 3))
+    kept = _thin(crest_rows, crest_cols, mask.shape[0], mask.shape[1], np.maximum(radius_k * crest_depth, 3))
     points, heights = np.c_[crest_rows[kept], crest_cols[kept]], crest_depth[kept]
     deepest = heights.max()
 
