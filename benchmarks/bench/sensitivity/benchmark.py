@@ -1,4 +1,3 @@
-import re
 import time
 from functools import partial
 from itertools import product
@@ -18,6 +17,9 @@ from bench.metrics import loops
 from bench.metrics import score
 from bench.runner import timed
 from bench.scene import Scene
+from bench.sensitivity.figures import sensitivity_figure
+from bench.sensitivity.variants import BASELINE
+from bench.sensitivity.variants import Variant
 from bench.sensitivity.variants import sensitivities
 from bench.synthetic.cases import make_scene
 from scipy.stats import wilcoxon
@@ -32,7 +34,6 @@ from crestline.crestline import _rasterize
 
 RUNS_PATH = OUTPUT_DIR / 'sensitivity_benchmark_runs.csv'
 TABLE_PATH = OUTPUT_DIR / 'sensitivity_benchmark_results.csv'
-REPORT_PATH = OUTPUT_DIR / 'sensitivity_report.md'
 
 DEFAULT_CASES = ('roads', 'mixed', 'river')
 DEFAULT_SEEDS = tuple(range(10))
@@ -54,7 +55,7 @@ def sources(scene: Scene) -> dict[str, tuple[np.ndarray, Affine]]:
     return {'polygon': (mask, transform), 'noisy mask': (scene.mask, scene.transform)}
 
 
-def trace(variant: Any, mask: np.ndarray, transform: Affine) -> Geometry:
+def trace(variant: Variant, mask: np.ndarray, transform: Affine) -> Geometry:
     return crestline(mask, transform=transform, **variant.options)
 
 
@@ -115,7 +116,7 @@ def compare(variant_vals: np.ndarray, full: np.ndarray, higher_is_better: bool) 
 
     return {
         'full': full.mean(),
-        'variant_mean': variant_vals.mean(),  # Avoids collision with variant name string
+        'variant_mean': variant_vals.mean(),
         'delta': variant_vals.mean() - full.mean(),
         'worse': int((gain < -tolerance).sum()),
         'better': int((gain > tolerance).sum()),
@@ -135,8 +136,7 @@ def holm(p_values: pd.Series) -> pd.Series:
 
 
 def paired(runs: pd.DataFrame) -> pd.DataFrame:
-    baseline_name = 's=2_t=0.5_rk=0.35'
-    baseline_runs = runs.loc[runs['variant'] == baseline_name, [*SCENE_KEYS, *HIGHER_IS_BETTER]]
+    baseline_runs = runs.loc[runs['variant'] == BASELINE, [*SCENE_KEYS, *HIGHER_IS_BETTER]]
     paired_runs = runs.merge(baseline_runs, on=SCENE_KEYS, suffixes=('', '_full'))
     rows: list[dict[str, Any]] = []
 
@@ -158,55 +158,6 @@ def paired(runs: pd.DataFrame) -> pd.DataFrame:
         table['direction'],
     )
     return table.drop(columns='direction')
-
-
-def generate_sensitivity_report(table: pd.DataFrame) -> None:
-    """Compiles and writes out a Markdown sensitivity report highlighting failing/sensitive configurations."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    sensitive_rows = table[table['verdict'].isin(['worse', 'better'])]
-    total_configs = table['variant'].nunique()
-    failing_configs = sensitive_rows['variant'].nunique()
-
-    report_lines = [
-        '# Crestline Algorithm Sensitivity Analysis Report',
-        '\nThis report summarizes parameter sensitivity across the grid sweep for `spur`, `tip`, and `radius_k` against the default baseline (`s=2, t=0.5, rk=0.35`).\n',
-        '## Executive Summary',
-        f'- **Total Parameter Configurations Evaluated:** {total_configs}',
-        f'- **Stable Configurations (No Significant Change):** {total_configs - failing_configs}',
-        f'- **Sensitive / Diverging Configurations:** {failing_configs}\n',
-        '## Failing / Sensitive Configurations',
-        'The following parameter combinations produced statistically significant behavioral deviations or performance degradation compared to the baseline:\n',
-    ]
-
-    if not sensitive_rows.empty:
-        report_lines.extend(
-            [
-                '| Source | Variant | Spur (`s`) | Tip (`t`) | Radius_k (`rk`) | Metric | Baseline Mean | Variant Mean | Delta | Verdict | p_holm |',
-                '| :--- | :--- | :---: | :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: |',
-            ]
-        )
-        for _, r in sensitive_rows.iterrows():
-            variant_str = str(r['variant'])
-
-            s_match = re.search(r's=([^_]+)', variant_str)
-            t_match = re.search(r't=([^_]+)', variant_str)
-            rk_match = re.search(r'rk=([^_]+)', variant_str)
-
-            s_val = s_match.group(1) if s_match else '-'
-            t_val = t_match.group(1) if t_match else '-'
-            rk_val = rk_match.group(1) if rk_match else '-'
-
-            report_lines.append(
-                f"| {r['source']} | `{variant_str}` | {s_val} | {t_val} | {rk_val} | `{r['metric']}` | {r['full']:.3f} | {r['variant_mean']:.3f} | {r['delta']:+.3f} | **{r['verdict']}** | {r['p_holm']:.4f} |"
-            )
-    else:
-        report_lines.append(
-            '_No sensitive or failing configurations found. All parameter variations match the baseline stability._\n'
-        )
-
-    REPORT_PATH.write_text('\n'.join(report_lines))
-    logger.info(f'Wrote sensitivity report to {REPORT_PATH}')
 
 
 def main(
@@ -238,4 +189,4 @@ def main(
     table.round(4).to_csv(TABLE_PATH, index=False, lineterminator='\n')
     logger.info(f'Wrote {len(table)} comparisons to {TABLE_PATH}')
 
-    generate_sensitivity_report(table)
+    sensitivity_figure(table)
