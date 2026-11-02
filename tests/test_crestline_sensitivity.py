@@ -29,7 +29,7 @@ def make_parallel_roads():
 def make_noisy_road():
     road = _scene((80, 300), (25, 30, 10, 290))
     for row, col in MODS:
-        road.mask[row : row + 6, col : col + 6] = True
+        road.mask[row: row + 6, col: col + 6] = True
     return road.mask
 
 
@@ -61,7 +61,7 @@ def make_diagonal_road():
 ALL_SENSITIVITY_CASES = {
     # Standard CASES from test_crestline.py
     **{name: (lambda m=make(): m, n) for name, (make, n) in CASES.items()},
-    
+
     # Ablation scenes using standalone builders
     'ablation_parallel_roads': (make_parallel_roads, 2),
     'ablation_noisy_road': (make_noisy_road, 1),
@@ -86,7 +86,7 @@ ALL_SENSITIVITY_CASES = {
 @pytest.mark.parametrize('radius_k', RADIUS_K_VALUES)
 def test_crestline_comprehensive_sensitivity(name, spur, tip, radius_k):
     """
-    Runs the full parameter sensitivity sweep across all test geometries from 
+    Runs the full parameter sensitivity sweep across all test geometries from
     test_crestline.py, test_crestline_ablation.py, and test_crestline_occluded.py.
     Saves visualization plots to tests/output/test_sensitivity/{name}/.
     """
