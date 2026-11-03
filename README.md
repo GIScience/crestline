@@ -5,6 +5,12 @@ Polygon centerlines by flooding: no skeletonization, linear time, for shapely po
 ## Install
 
 ```bash
+pip install git+https://github.com/giscience/crestline
+```
+
+or, from a clone of this repository,
+
+```bash
 uv sync
 ```
 
@@ -16,26 +22,48 @@ uv sync --extra cu12
 uv sync --extra cu13
 ```
 
+## Usage
+
+```python
+import numpy as np
+import shapely
+from crestline import crestline
+
+road = shapely.LineString([(0, 0), (300, 40), (600, 0)]).buffer(12)
+lines = crestline(road, resolution=0.5)
+
+mask = np.zeros((200, 400), bool)
+mask[80:120, 20:380] = True
+lines = crestline(mask)
+```
+
 ## How it works
 
-1. **Flood in.** The shape is flooded from its boundary one ring per step. A pixel's depth is the number of steps it
-   stays dry.
-1. **Crest.** Pixels with nothing deeper within 2 px are the crest: where the flood runs out.
-1. **Flood out.** A second flood runs back from the crest, staying inside the shape. `climb / (climb + to_go)` gives a
-   0 → 1 center raster that peaks along the middle of every branch, whatever its width. Its peaks are exactly the crest
-   pixels at least 2 steps deep, so the vector pipeline reads them straight from step 2.
-1. **Link.** Crest points are thinned and linked along the ridges, both scaled by each point's own depth, so narrow and
-   wide branches are treated alike. The longest link of every triangle or quad is dropped, and dead ends whose disc fits
-   inside the disc of a much deeper point (edge noise) are pruned. Dead ends that face each other across a break of the
-   crest are joined when each is the other's nearest and the straight line between them stays inside the shape.
+1. **Rasterize** (polygons only). The polygon is burnt into a mask at `resolution` with an even-odd scanline fill at
+   pixel centres, so holes and multipart shapes need no special care.
+1. **Flood in.** The shape is flooded from its boundary one ring per step, alternating 4- and 8-neighbour steps
+   (octagonal distance). A pixel's depth is the number of steps it stays dry; every pixel is visited once.
+1. **Crest.** Pixels at least 2 steps deep with nothing deeper in their 5x5 window are the crest: where the flood runs
+   out. The narrowest branch that gets a line is 3 px wide.
+1. **Link.** Crest pixels are thinned, deepest first, to nodes spaced `max(radius_k * depth, 3)` px apart. Two nodes are
+   linked when they are at most twice the deeper depth apart and the depth along the link never drops below
+   `dip` times the shallower end (ridge test). The longest link of every triangle or quad is dropped.
+1. **Clean.** Dead ends whose disc fits inside `spur` times the disc of a much deeper node (edge noise) are pruned leaf
+   by leaf. Dead ends that face each other across a break of the crest are joined when each is the other's nearest
+   and the straight line between them stays inside the shape. Loops around holes too small for the depth around them
+   (occluders such as cars or tree crowns) are opened.
+1. **Refine.** Dead ends are moved to the far end of their crest, every node to the mean of the equally deep crest
+   pixels around it (half a pixel on even-width branches), and the links are merged into lines between junctions and
+   dead ends.
 
 ## Benchmark
 
 ![](benchmarks/output/synthetic_benchmark.png)
 
-Synthetic shapes with known centerlines at 1 m pixels:
+Synthetic shapes with known centerlines, as clean polygons (rasterized at 0.5 m) and as noisy masks at 1 m pixels:
 - 1 km road networks (15 m half-width),
-- 1 km road networks with  mixed half-widths (6 to 30 m) and 1 km tapering rivers (5 to 30 m), six seeds each, plus a 4 km road network.
+- 1 km road networks with mixed half-widths (6 to 30 m) and 1 km tapering rivers (5 to 30 m), six seeds each, plus a
+  4 km road network (`roads-large`, two seeds).
 
 ### CUDA
 
@@ -55,8 +83,8 @@ uv run python benchmarks/synthetic_benchmark.py
 ![](benchmarks/output/real_benchmark.png)
 
 The Łódź road network in `benchmarks/data` (EPSG:2180): BDOT10k road centerlines are the ground truth, and the road
-surface is each centerline buffered by its real road width (2,836 km of roads, 24.7 km² of surface).
-Buffers of 1 to 6 km around the centroid of the centerlines cut out a growing piece of the network.
+surface is each centerline buffered by half of its recorded road width (2,836 km of roads, 26.9 km² of surface).
+Buffers of 1 to 5 km around the centroid of the centerlines cut out a growing piece of the network.
 The method follows the synthetic benchmark.
 
 ### Reproduce
@@ -88,6 +116,21 @@ uv sync --extra benchmark
 uv run python benchmarks/sensitivity_benchmark.py
 ```
 
+## Reproducing the paper
+
+The CSV files in `benchmarks/output` are the runs behind the paper, made on a 24-core Intel Core i7-13700HX and an
+NVIDIA RTX 3500 Ada laptop GPU. The accuracy and topology columns depend only on the seeds; the runtimes depend on the
+hardware.
+
+| Paper                      | Script                                         | Source in `benchmarks/output`                                                         |
+|----------------------------|------------------------------------------------|---------------------------------------------------------------------------------------|
+| Table I (synthetic)        | `synthetic_benchmark.py`                       | `synthetic_benchmark_results.csv`, mean of the `roads`, `mixed` and `river` rows       |
+| Table II (real data)       | `real_benchmark.py`                            | `real_benchmark_results.csv`, rows with `radius_km` = 5                               |
+| Runtime                    | `synthetic_benchmark.py`, `real_benchmark.py`  | `runtime_ms` of both files, including `roads-large` and every buffer                   |
+| Table III (ablation)       | `ablation_benchmark.py`                        | `ablation_benchmark_results.csv` (10 seeds, 30 scenes)                                 |
+| Sensitivity analysis       | `sensitivity_benchmark.py`                     | `sensitivity_benchmark_results.csv` (125 variants, 7,500 runs)                         |
+| Figures 1-4                | `paper/*_plot.py`                              | `paper/*.png`                                                                         |
+
 ## Limitations
 
 Disjoint parts of a shape are processed independently with no bridging of the gaps between them.
@@ -99,11 +142,10 @@ Occluders that only make a hole into a branch are handled by opening the loop ar
 Crestline combines established ideas:
 
 - Blum's grassfire transform (https://en.wikipedia.org/wiki/Grassfire_transform),
-- Digital distance transforms (Rosenfeld & Pfaltz, 1968),
-- Boundary-to-skeleton ratio field like the skeleton-aware distance transform of Lin et al. (MICCAI 2023).
+- Digital distance transforms (Rosenfeld & Pfaltz, 1968).
 
-What it adds is a skeletonization-free, linear-time pipeline that normalises inside the shape and works on both vectors
-and rasters.
+What it adds is a skeletonization-free pipeline whose linking and pruning rules scale with the local depth, with
+linear-time raster stages, that works on both vectors and rasters.
 
 ## AI Assistance
 
