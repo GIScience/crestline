@@ -793,7 +793,7 @@ def crestline(
     :param device: 'cpu' or 'cuda' (needs numba-cuda), same result
     :return: centerline, empty if there is none
     """
-    pixel_grid = None
+    pixel_grid, proj_crs = None, None
     if isinstance(source, shapely.Geometry):
         if source.geom_type not in ('Polygon', 'MultiPolygon'):
             raise TypeError(f'expected a Polygon or MultiPolygon, got {source.geom_type}')
@@ -866,7 +866,7 @@ def crestline(
     if simplify:
         lines = lines.simplify(simplify)
 
-    if epsg_crs is not None and CRS.from_epsg(epsg_crs).is_geographic:
+    if proj_crs is not None and CRS.from_epsg(epsg_crs).is_geographic:
         lines = _reproject_crs(lines, src_crs=proj_crs, dst_crs=CRS.from_epsg(epsg_crs))
 
     return lines if isinstance(lines, MultiLineString) else MultiLineString([lines])
