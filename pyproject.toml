@@ -1,27 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "crestline"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "matplotlib>=3.11.2",
+    "affine>=3.0.1",
     "numba>=0.68.0",
     "numpy>=2.5.4",
-    "pandas-stubs~=3.1.0",
-    "pre-commit>=4.7.0",
     "pyproj>=3.8.0",
     "scipy>=1.18.1",
-    "scipy-stubs~=1.18.1",
     "shapely>=2.2.0",
 ]
 
 [tool.setuptools]
-py-modules = ['crestline']
+packages = ["crestline"]
 
 [project.optional-dependencies]
 benchmark = [
         "centerline>=1.1.1",
         "label-centerlines>=2022.6.0",
         "jsonargparse>=4.52.0",
+        "matplotlib>=3.11.2",
         "pygeoops>=0.6.0",
         "rasterio>=1.5.2",
         "skan>=0.13.1",
@@ -31,12 +33,15 @@ cpu = []
 cu12 = ["numba-cuda[cu12]>=0.30.4"]
 cu13 = ["numba-cuda[cu13]>=0.30.4"]
 dev = [
+    "matplotlib>=3.11.2",
     "pandas>=3.0.6",
+    "pandas-stubs~=3.1.0",
     "pre-commit>=4.7.0",
     "pytest>=9.1.1",
     "pytest-durations>=1.10.0",
     "pytest-repeat>=0.9.4",
     "rasterio>=1.5.2",
+    "scipy-stubs~=1.18.1",
 ]
 
 [tool.uv]
