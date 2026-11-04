@@ -76,6 +76,7 @@ ALL_SENSITIVITY_CASES = {
 }
 
 
+@pytest.mark.heavy
 @pytest.mark.parametrize('name', list(ALL_SENSITIVITY_CASES.keys()))
 @pytest.mark.parametrize('spur', SPUR_VALUES)
 @pytest.mark.parametrize('tip', TIP_VALUES)

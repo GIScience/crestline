@@ -69,6 +69,20 @@ def test_project_polygon_with_no_crs():
     assert proj_crs is None
 
 
+@pytest.mark.parametrize('epsg_crs', [4326, 2180])
+def test_mask_with_crs(epsg_crs):
+    mask = np.zeros((40, 120), bool)
+    mask[10:30, 5:115] = True
+    transform = from_origin(19.45, 51.76, 1e-5, 1e-5)
+
+    lines = crestline(mask, epsg_crs=epsg_crs, transform=transform)
+
+    assert lines.equals_exact(crestline(mask, transform=transform), 0)
+    xy = shapely.get_coordinates(lines)
+    assert np.allclose(xy[:, 1], 51.7598)
+    assert 19.45005 < xy[:, 0].min() < xy[:, 0].max() < 19.45115
+
+
 def test_grid():
     mask = np.zeros((6, 8), bool)
     mask[1:5, 1:3] = True  # vertical bar
