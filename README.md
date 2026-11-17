@@ -5,6 +5,12 @@ Polygon centerlines by flooding: no skeletonization, linear time, for shapely po
 ## Install
 
 ```bash
+pip install crestline
+```
+
+or the latest development version,
+
+```bash
 pip install git+https://github.com/giscience/crestline
 ```
 
