@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crestline"
-version = "0.1.0"
+version = "1.0.1"
+description = "Polygon centerlines by flooding: no skeletonization, linear time, for shapely polygons and raster masks alike."
+readme = "README.md"
+license-files = ["LICENSE.txt"]
 requires-python = ">=3.12"
 dependencies = [
     "affine>=3.0.1",
